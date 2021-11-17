@@ -1,53 +1,66 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"os"
 
-	"strings"
-
-	"github.com/joho/godotenv"
+	"github.com/hoshsadiq/godotenv"
 )
 
 func main() {
-	var showHelp bool
-	flag.BoolVar(&showHelp, "h", false, "show help")
-	var rawEnvFilenames string
-	flag.StringVar(&rawEnvFilenames, "f", "", "comma separated paths to .env files")
+	var showVersion bool
+	envFilenames := stringsFlag{".env"}
 
-	flag.Parse()
+	flags := flag.NewFlagSet(projectName, flag.ContinueOnError)
+	flags.BoolVar(&showVersion, "v", false, "Show version information.")
+	flags.Var(&envFilenames, "f", "Comma separated paths to .env `files`. Repeat for multiple files.")
 
-	usage := `
-Run a process with an env setup from a .env file
+	flags.Usage = func() {
+		_, _ = fmt.Fprintf(flags.Output(), `Usage:
+  %[1]s options [ command [ arg ... ] ]
+  %[1]s [ options ] command [ arg ... ]
 
-godotenv [-f ENV_FILE_PATHS] COMMAND_ARGS
+Utility to run a process with an env setup from a .env file.
 
-ENV_FILE_PATHS: comma separated paths to .env files
-COMMAND_ARGS: command and args you want to run
+Options:
+`, projectName)
+		flags.PrintDefaults()
 
-example
-  godotenv -f /path/to/something/.env,/another/path/.env fortune
-`
-	// if no args or -h flag
-	// print usage and return
-	args := flag.Args()
-	if showHelp || len(args) == 0 {
-		fmt.Println(usage)
+		_, _ = fmt.Fprintln(flags.Output())
+		_, _ = fmt.Fprintln(flags.Output(), `Example:
+	godotenv -f /path/to/something/.env -f /another/path/.env fortune
+	`)
+		_, _ = fmt.Fprintf(flags.Output(), `For more information, see %s`, projectURL)
+		_, _ = fmt.Fprintln(flags.Output())
+	}
+
+	err := flags.Parse(os.Args[1:])
+	if errors.Is(err, flag.ErrHelp) {
 		return
 	}
 
-	// load env
-	var envFilenames []string
-	if rawEnvFilenames != "" {
-		envFilenames = strings.Split(rawEnvFilenames, ",")
+	if showVersion {
+		_, _ = fmt.Fprintf(flags.Output(), `%s %s+%s`, projectName, version, gitCommit)
+		_, _ = fmt.Fprintln(flags.Output())
+		return
+	}
+
+	// if no args or help requested
+	// print usage and return
+	args := flags.Args()
+	if len(args) == 0 {
+		flags.Usage()
+		os.Exit(1)
 	}
 
 	// take rest of args and "exec" them
 	cmd := args[0]
 	cmdArgs := args[1:]
 
-	err := godotenv.Exec(envFilenames, cmd, cmdArgs)
+	err = godotenv.Exec(envFilenames, cmd, cmdArgs)
 	if err != nil {
 		log.Fatal(err)
 	}

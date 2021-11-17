@@ -12,8 +12,8 @@ import (
 var noopPresets = make(map[string]string)
 
 func parseAndCompare(t *testing.T, rawEnvLine string, expectedKey string, expectedValue string) {
-	key, value, _ := parseLine(rawEnvLine, noopPresets)
-	if key != expectedKey || value != expectedValue {
+	key, value, _ := parseLine(1, []byte(rawEnvLine), noopPresets)
+	if string(key) != expectedKey || string(value) != expectedValue {
 		t.Errorf("Expected '%v' to parse as '%v' => '%v', got '%v' => '%v' instead", rawEnvLine, expectedKey, expectedValue, key, value)
 	}
 }
@@ -75,16 +75,12 @@ func TestReadPlainEnv(t *testing.T) {
 	expectedValues := map[string]string{
 		"OPTION_A": "1",
 		"OPTION_B": "2",
-		"OPTION_C": "3",
-		"OPTION_D": "4",
-		"OPTION_E": "5",
-		"OPTION_F": "",
-		"OPTION_G": "",
+		"OPTION_C": "",
 	}
 
 	envMap, err := Read(envFileName)
 	if err != nil {
-		t.Error("Error reading file")
+		t.Errorf("Error reading file: %s", err)
 	}
 
 	if len(envMap) != len(expectedValues) {
@@ -99,11 +95,10 @@ func TestReadPlainEnv(t *testing.T) {
 }
 
 func TestParse(t *testing.T) {
-	envMap, err := Parse(bytes.NewReader([]byte("ONE=1\nTWO='2'\nTHREE = \"3\"")))
+	envMap, err := Parse(bytes.NewReader([]byte("ONE=1\nTWO='2'")))
 	expectedValues := map[string]string{
-		"ONE":   "1",
-		"TWO":   "2",
-		"THREE": "3",
+		"ONE": "1",
+		"TWO": "2",
 	}
 	if err != nil {
 		t.Fatalf("error parsing env: %v", err)
@@ -150,9 +145,7 @@ func TestLoadPlainEnv(t *testing.T) {
 	expectedValues := map[string]string{
 		"OPTION_A": "1",
 		"OPTION_B": "2",
-		"OPTION_C": "3",
-		"OPTION_D": "4",
-		"OPTION_E": "5",
+		"OPTION_C": "",
 	}
 
 	loadEnvAndCompareValues(t, Load, envFileName, expectedValues, noopPresets)
@@ -286,8 +279,8 @@ func TestParsing(t *testing.T) {
 	parseAndCompare(t, "FOO=bar", "FOO", "bar")
 
 	// parses values with spaces around equal sign
-	parseAndCompare(t, "FOO =bar", "FOO", "bar")
-	parseAndCompare(t, "FOO= bar", "FOO", "bar")
+	parseAndCompare(t, "FOO =bar", "", "")
+	parseAndCompare(t, "FOO= bar", "", "")
 
 	// parses double quoted values
 	parseAndCompare(t, `FOO="bar"`, "FOO", "bar")
@@ -301,12 +294,6 @@ func TestParsing(t *testing.T) {
 	// parses single quotes inside double quotes
 	parseAndCompare(t, `FOO="'d'"`, "FOO", `'d'`)
 
-	// parses yaml style options
-	parseAndCompare(t, "OPTION_A: 1", "OPTION_A", "1")
-
-	//parses yaml values with equal signs
-	parseAndCompare(t, "OPTION_A: Foo=bar", "OPTION_A", "Foo=bar")
-
 	// parses non-yaml options with colons
 	parseAndCompare(t, "OPTION_A=1:B", "OPTION_A", "1:B")
 
@@ -315,19 +302,13 @@ func TestParsing(t *testing.T) {
 	parseAndCompare(t, `export OPTION_B='\n'`, "OPTION_B", "\\n")
 	parseAndCompare(t, "export exportFoo=2", "exportFoo", "2")
 	parseAndCompare(t, "exportFOO=2", "exportFOO", "2")
-	parseAndCompare(t, "export_FOO =2", "export_FOO", "2")
-	parseAndCompare(t, "export.FOO= 2", "export.FOO", "2")
+	parseAndCompare(t, "export_FOO=2", "export_FOO", "2")
+	parseAndCompare(t, "export.FOO=2", "", "")
 	parseAndCompare(t, "export\tOPTION_A=2", "OPTION_A", "2")
 	parseAndCompare(t, "  export OPTION_A=2", "OPTION_A", "2")
 	parseAndCompare(t, "\texport OPTION_A=2", "OPTION_A", "2")
-
-	// it 'expands newlines in quoted strings' do
-	// expect(env('FOO="bar\nbaz"')).to eql('FOO' => "bar\nbaz")
 	parseAndCompare(t, `FOO="bar\nbaz"`, "FOO", "bar\nbaz")
-
-	// it 'parses varibales with "." in the name' do
-	// expect(env('FOO.BAR=foobar')).to eql('FOO.BAR' => 'foobar')
-	parseAndCompare(t, "FOO.BAR=foobar", "FOO.BAR", "foobar")
+	parseAndCompare(t, "FOO.BAR=foobar", "", "")
 
 	// it 'parses varibales with several "=" in the value' do
 	// expect(env('FOO=foobar=')).to eql('FOO' => 'foobar=')
@@ -353,57 +334,26 @@ func TestParsing(t *testing.T) {
 	parseAndCompare(t, `FOO="ba#r"`, "FOO", "ba#r")
 	parseAndCompare(t, "FOO='ba#r'", "FOO", "ba#r")
 
-	//newlines and backslashes should be escaped
+	// newlines and backslashes should be escaped
 	parseAndCompare(t, `FOO="bar\n\ b\az"`, "FOO", "bar\n baz")
 	parseAndCompare(t, `FOO="bar\\\n\ b\az"`, "FOO", "bar\\\n baz")
 	parseAndCompare(t, `FOO="bar\\r\ b\az"`, "FOO", "bar\\r baz")
 
-	parseAndCompare(t, `="value"`, "", "value")
-	parseAndCompare(t, `KEY="`, "KEY", "\"")
-	parseAndCompare(t, `KEY="value`, "KEY", "\"value")
+	parseAndCompare(t, `="value"`, "", "")
+	parseAndCompare(t, `KEY="`, "", "")
+	parseAndCompare(t, `KEY="value`, "", "")
 
 	// leading whitespace should be ignored
-	parseAndCompare(t, " KEY =value", "KEY", "value")
+	parseAndCompare(t, " KEY =value", "", "")
 	parseAndCompare(t, "   KEY=value", "KEY", "value")
 	parseAndCompare(t, "\tKEY=value", "KEY", "value")
 
 	// it 'throws an error if line format is incorrect' do
 	// expect{env('lol$wut')}.to raise_error(Dotenv::FormatError)
 	badlyFormattedLine := "lol$wut"
-	_, _, err := parseLine(badlyFormattedLine, noopPresets)
+	_, _, err := parseLine(1, []byte(badlyFormattedLine), noopPresets)
 	if err == nil {
 		t.Errorf("Expected \"%v\" to return error, but it didn't", badlyFormattedLine)
-	}
-}
-
-func TestLinesToIgnore(t *testing.T) {
-	// it 'ignores empty lines' do
-	// expect(env("\n \t  \nfoo=bar\n \nfizz=buzz")).to eql('foo' => 'bar', 'fizz' => 'buzz')
-	if !isIgnoredLine("\n") {
-		t.Error("Line with nothing but line break wasn't ignored")
-	}
-
-	if !isIgnoredLine("\r\n") {
-		t.Error("Line with nothing but windows-style line break wasn't ignored")
-	}
-
-	if !isIgnoredLine("\t\t ") {
-		t.Error("Line full of whitespace wasn't ignored")
-	}
-
-	// it 'ignores comment lines' do
-	// expect(env("\n\n\n # HERE GOES FOO \nfoo=bar")).to eql('foo' => 'bar')
-	if !isIgnoredLine("# comment") {
-		t.Error("Comment wasn't ignored")
-	}
-
-	if !isIgnoredLine("\t#comment") {
-		t.Error("Indented comment wasn't ignored")
-	}
-
-	// make sure we're not getting false positives
-	if isIgnoredLine(`export OPTION_B='\n'`) {
-		t.Error("ignoring a perfectly valid line to parse")
 	}
 }
 
@@ -432,15 +382,19 @@ func TestWrite(t *testing.T) {
 			t.Errorf("Expected '%v' (%v) to write as '%v', got '%v' instead.", env, envMap, expected, actual)
 		}
 	}
-	//just test some single lines to show the general idea
-	//TestRoundtrip makes most of the good assertions
+	// just test some single lines to show the general idea
+	// TestRoundtrip makes most of the good assertions
 
-	//values are always double-quoted
+	// values are always double-quoted
 	writeAndCompare(`key=value`, `key="value"`)
-	//double-quotes are escaped
-	writeAndCompare(`key=va"lu"e`, `key="va\"lu\"e"`)
-	//but single quotes are left alone
-	writeAndCompare(`key=va'lu'e`, `key="va'lu'e"`)
+	// non-nested double-quotes are seen as strings
+	writeAndCompare(`key=va"lu"e`, `key="value"`)
+	// same with single quotes
+	writeAndCompare(`key=va'lu'e`, `key="value"`)
+	// nested double quoted variables are escaped
+	writeAndCompare(`key='va"lu"e'`, `key="va\"lu\"e"`)
+	// nested single quoted variables are left alone
+	writeAndCompare(`key="va'lu'e"`, `key="va'lu'e"`)
 	// newlines, backslashes, and some other special chars are escaped
 	writeAndCompare(`foo="\n\r\\r!"`, `foo="\n\r\\r\!"`)
 	// lines should be sorted

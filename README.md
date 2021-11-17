@@ -1,4 +1,4 @@
-# GoDotEnv ![CI](https://github.com/joho/godotenv/workflows/CI/badge.svg) [![Go Report Card](https://goreportcard.com/badge/github.com/joho/godotenv)](https://goreportcard.com/report/github.com/joho/godotenv)
+# GoDotEnv ![CI](https://github.com/hoshsadiq/godotenv/workflows/Validate/badge.svg) [![Go Report Card](https://goreportcard.com/badge/github.com/hoshsadiq/godotenv)](https://goreportcard.com/report/github.com/hoshsadiq/godotenv)
 
 A Go (golang) port of the Ruby dotenv project (which loads env vars from a .env file)
 
@@ -12,18 +12,57 @@ It can be used as a library (for loading in env for your own daemons etc) or as 
 
 There is test coverage and CI for both linuxish and windows environments, but I make no guarantees about the bin version working on windows.
 
+This is a fork of [joho/godotenv](https://github.com/joho/godotenv) with an improved parser that allows for far fewer allocations, and, due to removal of regexp usage, it should be significantly faster.
+
 ## Installation
 
 As a library
-
 ```shell
-go get github.com/joho/godotenv
+go get github.com/hoshsadiq/godotenv
 ```
 
 or if you want to use it as a bin command
 ```shell
-go get github.com/joho/godotenv/cmd/godotenv
+go install github.com/hoshsadiq/godotenv/cmd/godotenv@latest
 ```
+
+or via GitHub releases:
+```shell
+os="linux" # linux, darwin, freebsd, windows
+arch="amd64" # amd64, armv6, armv7, arm64
+
+# latest version
+curl -fsSL "https://github.com/hoshsadiq/godotenv/releases/latest/download/godotenv_linux_amd64.tar.gz" |
+  tar -xzvf - -C $HOME/.local/bin
+
+# or a specific version
+curl -fsSL "https://github.com/hoshsadiq/godotenv/releases/download/v1.0.0/godotenv_linux_amd64.tar.gz" |
+  tar -xzvf - -C $HOME/.local/bin
+```
+
+For a list of os/arch combinations, see the [releases page](https://github.com/hoshsadiq/godotenv/releases).
+
+In the case of GitHub releases, you can verify the artifact using GPG:
+```shell
+os="linux" # linux, darwin, freebsd, or windows
+arch="amd64" # amd64, armv6, armv7, or arm64
+GPG_FINGERPRINT=92868EBC70DF83601ED085F7CE5D02E4C68038C1
+
+curl -fsSL https://github.com/hoshsadiq.gpg  | gpg --import --batch --no-tty
+printf "%s:6:\n" "${GPG_FINGERPRINT}" | gpg --import-ownertrust
+
+# this is for latest release, substitute URL as per above if you need a specific release
+curl -fsSL "https://github.com/hoshsadiq/godotenv/releases/latest/download/godotenv_checksums.txt" -o godotenv_checksums.txt
+curl -fsSL "https://github.com/hoshsadiq/godotenv/releases/latest/download/godotenv_checksums.txt.sig" -o godotenv_checksums.txt.sig
+
+tmpfifo="$(mktemp -u -t gpgverifyXXXXXXXXX)"
+gpg --status-fd 3 --verify godotenv_checksums.txt.sig godotenv_checksums.txt 3>$tmpfifo
+grep -Eq '^\[GNUPG:] TRUST_(ULTIMATE|FULLY)' $tmpfifo
+
+grep godotenv_linux_amd64.tar.gz godotenv_checksums.txt | sha256sum -c
+```
+
+Lastly, you can use Docker or Podman to pull in godotenv. See the [releases page](https://github.com/hoshsadiq/godotenv/releases) for the URLs and tags. Note the images are based on [distroless](https://github.com/GoogleContainerTools/distroless) so they do not have a shell or anything else attached. Thus they're only useful for minimal images or copying the executable over into your own Docker image.
 
 ## Usage
 
@@ -40,7 +79,7 @@ Then in your Go app you can do something like
 package main
 
 import (
-    "github.com/joho/godotenv"
+    "github.com/hoshsadiq/godotenv"
     "log"
     "os"
 )
@@ -61,7 +100,7 @@ func main() {
 If you're even lazier than that, you can just take advantage of the autoload package which will read in `.env` on import
 
 ```go
-import _ "github.com/joho/godotenv/autoload"
+import _ "github.com/hoshsadiq/godotenv/autoload"
 ```
 
 While `.env` in the project root is the default, you don't have to be constrained, both examples below are 100% legit
@@ -78,13 +117,6 @@ If you want to be really fancy with your env file you can do comments and export
 SOME_VAR=someval
 FOO=BAR # comments at line end are OK too
 export BAR=BAZ
-```
-
-Or finally you can do YAML(ish) style
-
-```yaml
-FOO: bar
-BAR: baz
 ```
 
 as a final aside, if you don't want godotenv munging your env you can just get a map back instead
@@ -137,7 +169,7 @@ and overwrite existing envs instead of only supplanting them. Use with caution.
 
 ### Command Mode
 
-Assuming you've installed the command as above and you've got `$GOPATH/bin` in your `$PATH`
+Assuming you've installed the command as above, and you've got `$GOPATH/bin` in your `$PATH`
 
 ```
 godotenv -f /some/path/to/.env some_command with some args
@@ -177,11 +209,11 @@ Contributions are most welcome! The parser itself is pretty stupidly naive and I
 
 Releases should follow [Semver](http://semver.org/) though the first couple of releases are `v1` and `v1.1`.
 
-Use [annotated tags for all releases](https://github.com/joho/godotenv/issues/30). Example `git tag -a v1.2.1`
+Use [annotated tags for all releases](https://github.com/hoshsadiq/godotenv/issues/30). Example `git tag -a v1.2.1`
 
 ## CI
 
-Linux: [![Build Status](https://travis-ci.org/joho/godotenv.svg?branch=master)](https://travis-ci.org/joho/godotenv) Windows: [![Build status](https://ci.appveyor.com/api/projects/status/9v40vnfvvgde64u4)](https://ci.appveyor.com/project/joho/godotenv)
+Linux: [![Build Status](https://travis-ci.org/hoshsadiq/godotenv.svg?branch=master)](https://travis-ci.org/joho/godotenv) Windows: [![Build status](https://ci.appveyor.com/api/projects/status/9v40vnfvvgde64u4)](https://ci.appveyor.com/project/joho/godotenv)
 
 ## Who?
 

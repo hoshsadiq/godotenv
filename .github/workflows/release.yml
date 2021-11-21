@@ -1,32 +1,57 @@
+name: Release
+
 on:
   push:
     tags:
-    - 'v*' # Push events to matching v*, i.e. v1.0, v20.15.10
+      - 'v*'
 
-name: Upload Release Assets
+env:
+  GPG_FINGERPRINT: 92868EBC70DF83601ED085F7CE5D02E4C68038C1
+  DOCKER_CLI_EXPERIMENTAL: enabled
 
 jobs:
-  build:
-    name: Upload Release Assets
+  goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v2
-      - name: Generate build files
-        uses: thatisuday/go-cross-build@v1
+
+      - name: Wait for tests to succeed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WAIT_BRANCH: ${{ github.ref_name }}
+          WAIT_SHA: ${{ github.sha }}
+          WAIT_EVENT: push
+          WAIT_WORKFLOW_NAME: Validate
+        run: ./.github/wait-for-workflow.sh
+
+      - name: Unshallow
+        run: git fetch --prune --unshallow
+
+      - name: Allow arm Docker builds # https://github.com/linuxkit/linuxkit/tree/master/pkg/binfmt
+        run: sudo docker run --privileged linuxkit/binfmt:v0.8
+
+      - name: Import GPG key
+        id: import_gpg
+        run: |
+          echo -e "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch --no-tty
+          printf "%s:6:\n" "${GPG_FINGERPRINT}" | gpg --import-ownertrust
+          echo "::set-output name=fingerprint::$(gpg --with-colons --list-keys | awk -F: '/^pub/ { print $5 }')"
+
+      - name: Github Docker login
+        run: echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Set up Go
+        uses: actions/setup-go@v2
         with:
-            platforms: 'linux/amd64, linux/ppc64le, darwin/amd64, windows/amd64'
-            package: 'cmd/godotenv'
-            name: 'godotenv'
-            compress: 'true'
-            dest: 'dist'
-      - name: Publish Binaries
-        uses: svenstaro/upload-release-action@v2
+          go-version: 1.17
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v2
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          release_name: Release ${{ github.ref }}
-          tag: ${{ github.ref }}
-          file: dist/*
-          file_glob: true
-          overwrite: true
-          
+          version: latest
+          args: release --config .goreleaser.yaml
+        env:
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

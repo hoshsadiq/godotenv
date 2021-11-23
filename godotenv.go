@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,25 +121,6 @@ func Parse(r io.Reader) (envMap map[string]string, err error) {
 // Unmarshal reads an env file from a string, returning a map of keys and values.
 func Unmarshal(str string) (envMap map[string]string, err error) {
 	return Parse(strings.NewReader(str))
-}
-
-// Exec loads env vars from the specified filenames (empty map falls back to default)
-// then executes the cmd specified.
-//
-// Simply hooks up os.Stdin/err/out to the command and calls Run()
-//
-// If you want more fine grained control over your command it's recommended
-// that you use `Load()` or `Read()` and the `os/exec` package yourself.
-func Exec(filenames []string, cmd string, cmdArgs []string) error {
-	if err := Load(filenames...); err != nil {
-		return err
-	}
-
-	command := exec.Command(cmd, cmdArgs...)
-	command.Stdin = os.Stdin
-	command.Stdout = os.Stdout
-	command.Stderr = os.Stderr
-	return command.Run()
 }
 
 // Write serializes the given environment and writes it to a file

@@ -4,10 +4,9 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/hoshsadiq/godotenv"
 	"log"
 	"os"
-
-	"github.com/hoshsadiq/godotenv"
 )
 
 func main() {
@@ -56,11 +55,17 @@ Options:
 		os.Exit(1)
 	}
 
+	err = godotenv.Load(envFilenames...)
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+
 	// take rest of args and "exec" them
 	cmd := args[0]
 	cmdArgs := args[1:]
 
-	err = godotenv.Exec(envFilenames, cmd, cmdArgs)
+	err = execv(cmd, cmdArgs)
 	if err != nil {
 		log.Fatal(err)
 	}

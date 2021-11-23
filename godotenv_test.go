@@ -274,6 +274,17 @@ func TestActualEnvVarsAreLeftAlone(t *testing.T) {
 	}
 }
 
+// Issue https://github.com/joho/godotenv/issues/155
+// Though the issue compares against ruby's dotenv. Because $1 (and others) is a special variable, it needs to be
+// handled as such. Therefore, the result of the issue is as below.
+func TestIssue155(t *testing.T) {
+	t.Parallel()
+	parseAndCompare(t, "VARIABLE_0=$a$0$12$_x", "VARIABLE_0", "2")
+	parseAndCompare(t, `VARIABLE_1="$a$0$12$_x"`, "VARIABLE_1", "2")
+	parseAndCompare(t, `VARIABLE_2='$a$0$12$_x'`, "VARIABLE_2", "$a$0$12$_x")
+	parseAndCompare(t, `VARIABLE_3=       $a$0$12$_x`, "", "")
+}
+
 func TestParsing(t *testing.T) {
 	// unquoted values
 	parseAndCompare(t, "FOO=bar", "FOO", "bar")

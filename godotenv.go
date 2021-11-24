@@ -1,7 +1,5 @@
 // Package godotenv is a go port of the ruby dotenv library (https://github.com/bkeepers/dotenv)
-//
 // Examples/readme can be found on the github page at https://github.com/hoshsadiq/godotenv
-//
 // The TL;DR is that you make a .env file that looks something like
 //
 // 		SOME_ENV_VAR=somevalue
@@ -26,11 +24,8 @@ import (
 const doubleQuoteSpecialChars = "\\\n\r\"!$`"
 
 // Load will read your env file(s) and load them into ENV for this process.
-//
 // Call this function as close as possible to the start of your program (ideally in main)
-//
 // If you call Load without any args it will default to loading .env in the current path
-//
 // You can otherwise tell it which files to load (there can be more than one) like
 //
 //		godotenv.Load("fileone", "filetwo")
@@ -49,11 +44,8 @@ func Load(filenames ...string) (err error) {
 }
 
 // Overload will read your env file(s) and load them into ENV for this process.
-//
 // Call this function as close as possible to the start of your program (ideally in main)
-//
 // If you call Overload without any args it will default to loading .env in the current path
-//
 // You can otherwise tell it which files to load (there can be more than one) like
 //
 //		godotenv.Overload("fileone", "filetwo")
@@ -126,8 +118,7 @@ func ParseWithLookup(r io.Reader, lookupEnv lookupEnvFunc) (envMap map[string]st
 		}
 	}
 
-	err = scanner.Err()
-	return
+	return envMap, scanner.Err()
 }
 
 // Parse reads an env file from io.Reader, returning a map of keys and values.
@@ -226,7 +217,7 @@ func doubleQuoteEscape(line string) string {
 		if c == '\r' {
 			toReplace = `\r`
 		}
-		line = strings.Replace(line, string(c), toReplace, -1)
+		line = strings.ReplaceAll(line, string(c), toReplace)
 	}
 	return line
 }

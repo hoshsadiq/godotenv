@@ -85,7 +85,11 @@ ParseLoop:
 			case '"':
 				state = stateQuoteDouble
 			case '#':
-				break ParseLoop
+				if unicode.IsSpace(rune(line[j-1])) {
+					break ParseLoop
+				}
+
+				value = append(value, c)
 			case '$':
 				res, w, err := resolveParameter(line, lineNumber, j, line[j+1:], envMap)
 				if err != nil {

@@ -14,7 +14,7 @@ var noopPresets = make(map[string]string)
 func parseAndCompare(t *testing.T, rawEnvLine string, expectedKey string, expectedValue string) {
 	key, value, _ := parseLine(1, []byte(rawEnvLine), noopPresets)
 	if string(key) != expectedKey || string(value) != expectedValue {
-		t.Errorf("Expected '%v' to parse as '%v' => '%v', got '%v' => '%v' instead", rawEnvLine, expectedKey, expectedValue, key, value)
+		t.Errorf("Expected '%v' to parse as '%v' => '%v', got '%s' => '%s' instead", rawEnvLine, expectedKey, expectedValue, key, value)
 	}
 }
 
@@ -283,6 +283,14 @@ func TestIssue155(t *testing.T) {
 	parseAndCompare(t, `VARIABLE_1="$a$0$12$_x"`, "VARIABLE_1", "2")
 	parseAndCompare(t, `VARIABLE_2='$a$0$12$_x'`, "VARIABLE_2", "$a$0$12$_x")
 	parseAndCompare(t, `VARIABLE_3=       $a$0$12$_x`, "", "")
+}
+
+// https://github.com/joho/godotenv/issues/127
+// Hashes are comments if it's directly followed by whitespace
+func TestJohoIssue127(t *testing.T) {
+	t.Parallel()
+	parseAndCompare(t, `FOO=asd#asd`, "FOO", "asd#asd")
+	parseAndCompare(t, `FOO=asd #asd`, "FOO", "asd")
 }
 
 // https://github.com/joho/godotenv/issues/153

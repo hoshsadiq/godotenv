@@ -87,19 +87,11 @@ ParseLoop:
 			case '#':
 				break ParseLoop
 			case '$':
-				name, w := getShellName(line[j+1:])
-				if len(name) == 0 {
-					if w > 0 {
-						// Encountered invalid syntax; eat the
-						// characters.
-					} else {
-						// Valid syntax, but $ was not followed by a
-						// name. Leave the dollar character untouched.
-						value = append(value, c)
-					}
-				} else {
-					value = append(value, mapping(string(name), envMap)...)
+				res, w, err := resolveParameter(line, lineNumber, j, line[j+1:], envMap)
+				if err != nil {
+					return nil, nil, err
 				}
+				value = append(value, res...)
 				j += w
 			case ' ':
 				if len(value) == 0 {
@@ -118,19 +110,11 @@ ParseLoop:
 		case stateQuoteDouble:
 			switch c {
 			case '$':
-				name, w := getShellName(line[j+1:])
-				if len(name) == 0 {
-					if w > 0 {
-						// Encountered invalid syntax; eat the
-						// characters.
-					} else {
-						// Valid syntax, but $ was not followed by a
-						// name. Leave the dollar character untouched.
-						value = append(value, c)
-					}
-				} else {
-					value = append(value, mapping(string(name), envMap)...)
+				res, w, err := resolveParameter(line, lineNumber, j, line[j+1:], envMap)
+				if err != nil {
+					return nil, nil, err
 				}
+				value = append(value, res...)
 				j += w
 			case '"':
 				state = stateValue
@@ -171,7 +155,6 @@ ParseLoop:
 		case stateEscapeSingle:
 			value = append(value, '\\', c)
 			state = stateQuoteSingle
-
 		default:
 			panic(fmt.Errorf("state is invalid: %v. THIS IS A BUG", state))
 		}
@@ -209,39 +192,97 @@ func isAlphaNum(c uint8) bool {
 	return c == '_' || '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
-// getShellName returns the name that begins the string and the number of bytes
-// consumed to extract it. If the name is enclosed in {}, it's part of a ${}
-// expansion and two more bytes are needed than the length of the name.
-func getShellName(s []byte) ([]byte, int) {
+// resolveParameter resolves the parameter that begins the string and the number of bytes
+// consumed to extract the name of it. If the name is enclosed in {}, it's part of a ${}
+// expansion and this will be expanded based on a subset of POSIX specification. Namely:
+// ${VAR}				No parameter expansion
+// ${VAR:-STRING}		If VAR is empty or unset, use STRING as its value.
+// ${VAR-STRING}		If VAR is unset, use STRING as its value.
+// ${VAR:+STRING}		If VAR is not empty, use STRING as its value.
+// ${VAR+STRING}		If VAR is set, use STRING as its value.
+// https://steinbaugh.com/posts/posix.html#default-value
+// todo we should combine expandParameter with this function to avoid looping over the parameter twice.
+func resolveParameter(line []byte, lineNumber int, characterStart int, s []byte, envMap map[string]string) (name []byte, skip int, err error) {
 	switch {
 	case s[0] == '{':
-		if len(s) > 2 && isShellSpecialVar(s[1]) && s[2] == '}' {
-			return s[1:2], 3
-		}
 		// Scan to closing brace
 		for i := 1; i < len(s); i++ {
 			if s[i] == '}' {
 				if i == 1 {
-					return nil, 2 // Bad syntax; eat "${}"
+					return nil, 2, nil // Bad syntax; eat "${}"
 				}
-				return s[1:i], i + 1
+				val, err := expandParameter(line, lineNumber, characterStart+1, s[1:i], envMap)
+				return val, i + 1, err
 			}
 		}
-		return nil, 1 // Bad syntax; eat "${"
+		return nil, 0, newParserError(line, lineNumber, characterStart+1, "unmatched parenthesis for parameter")
 	case isShellSpecialVar(s[0]):
-		return s[0:1], 1
+		parameter, err := expandParameter(line, lineNumber, characterStart, s[0:1], envMap)
+		return parameter, 1, err
+	default:
+		// Scan alphanumerics.
+		var i int
+		for i = 0; i < len(s) && isAlphaNum(s[i]); i++ {
+		}
+		parameter, err := expandParameter(line, lineNumber, characterStart, s[:i], envMap)
+		return parameter, i, err
 	}
-	// Scan alphanumerics.
-	var i int
-	for i = 0; i < len(s) && isAlphaNum(s[i]); i++ {
-	}
-	return s[:i], i
 }
 
-func mapping(s string, envMap map[string]string) []byte {
-	if v, ok := envMap[s]; ok {
-		return []byte(v)
+func expandParameter(line []byte, lineNumber, characterStart int, s []byte, envMap map[string]string) (value []byte, err error) {
+	var varSet bool
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case ':':
+			if i == len(s) {
+				return nil, newParserError(line, lineNumber, characterStart, "unrecognized modifier")
+			}
+
+			value, varSet = expandEnvMap(s[0:i], envMap)
+			switch s[i+1] {
+			case '-':
+				if !varSet || len(value) == 0 {
+					return s[i+2:], nil
+				}
+
+				return value, nil
+			case '+':
+				if len(value) > 0 {
+					return s[i+2:], nil
+				}
+
+				return value, nil
+			default:
+				return nil, newParserError(line, lineNumber, characterStart+i+1, "unrecognized modifier")
+			}
+		case '-':
+			value, varSet = expandEnvMap(s[0:i], envMap)
+			if !varSet {
+				return s[i+1:], nil
+			}
+
+			return value, nil
+		case '+':
+			value, varSet = expandEnvMap(s[0:i], envMap)
+			if varSet {
+				return s[i+1:], nil
+			}
+
+			return value, nil
+		}
 	}
 
-	return []byte(os.Getenv(s))
+	value, _ = expandEnvMap(s, envMap)
+	return
+}
+
+func expandEnvMap(s []byte, envMap map[string]string) (value []byte, exists bool) {
+	var val string
+
+	if val, exists = envMap[string(s)]; exists {
+		return []byte(val), exists
+	}
+
+	val, exists = os.LookupEnv(string(s))
+	return []byte(val), exists
 }

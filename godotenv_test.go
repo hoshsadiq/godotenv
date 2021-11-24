@@ -285,6 +285,20 @@ func TestIssue155(t *testing.T) {
 	parseAndCompare(t, `VARIABLE_3=       $a$0$12$_x`, "", "")
 }
 
+// https://github.com/joho/godotenv/issues/153
+// Docker compose v2 requires parameter expansion
+func TestJohoIssue153(t *testing.T) {
+	t.Parallel()
+	parseAndCompare(t, `FOO=${FOO:-FOO_ENV_DEFAULT}`, "FOO", "FOO_ENV_DEFAULT")
+	parseAndCompare(t, `BAR="${BAR:-BAR_ENV_DEFAULT}"`, "BAR", "BAR_ENV_DEFAULT")
+
+	os.Setenv("FOO", "bla")
+	os.Setenv("BAR", "bla")
+
+	parseAndCompare(t, `FOO=${FOO:-FOO_ENV_DEFAULT}`, "FOO", "bla")
+	parseAndCompare(t, `BAR="${BAR:-BAR_ENV_DEFAULT}"`, "BAR", "bla")
+}
+
 func TestParsing(t *testing.T) {
 	// unquoted values
 	parseAndCompare(t, "FOO=bar", "FOO", "bar")

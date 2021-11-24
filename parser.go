@@ -3,7 +3,6 @@ package godotenv
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"unicode"
 )
 
@@ -23,7 +22,12 @@ const (
 	stateQuoteSingle
 )
 
-func parseLine(lineNumber int, line []byte, envMap map[string]string) (key []byte, value []byte, err error) {
+// lookupEnvFunc is used to determine the value of an environment, and whether it exists or not.
+// This should only look at the application environment and not at previous parsed items in a .env file.
+// Previously parsed items in an .env file take precedence over the environment.
+type lookupEnvFunc func(name []byte) (value []byte, exists bool)
+
+func parseLine(lineNumber int, line []byte, lookupEnv lookupEnvFunc) (key []byte, value []byte, err error) {
 	if len(line) == 0 || line[0] == '#' {
 		return
 	}
@@ -91,7 +95,7 @@ ParseLoop:
 
 				value = append(value, c)
 			case '$':
-				res, w, err := resolveParameter(line, lineNumber, j, line[j+1:], envMap)
+				res, w, err := resolveParameter(line, lineNumber, j, line[j+1:], lookupEnv)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -114,7 +118,7 @@ ParseLoop:
 		case stateQuoteDouble:
 			switch c {
 			case '$':
-				res, w, err := resolveParameter(line, lineNumber, j, line[j+1:], envMap)
+				res, w, err := resolveParameter(line, lineNumber, j, line[j+1:], lookupEnv)
 				if err != nil {
 					return nil, nil, err
 				}
@@ -206,7 +210,7 @@ func isAlphaNum(c uint8) bool {
 // ${VAR+STRING}		If VAR is set, use STRING as its value.
 // https://steinbaugh.com/posts/posix.html#default-value
 // todo we should combine expandParameter with this function to avoid looping over the parameter twice.
-func resolveParameter(line []byte, lineNumber int, characterStart int, s []byte, envMap map[string]string) (name []byte, skip int, err error) {
+func resolveParameter(line []byte, lineNumber int, characterStart int, s []byte, lookupEnv lookupEnvFunc) (name []byte, skip int, err error) {
 	switch {
 	case s[0] == '{':
 		// Scan to closing brace
@@ -215,26 +219,26 @@ func resolveParameter(line []byte, lineNumber int, characterStart int, s []byte,
 				if i == 1 {
 					return nil, 2, nil // Bad syntax; eat "${}"
 				}
-				val, err := expandParameter(line, lineNumber, characterStart+1, s[1:i], envMap)
+				val, err := expandParameter(line, lineNumber, characterStart+1, s[1:i], lookupEnv)
 				return val, i + 1, err
 			}
 		}
 		return nil, 0, newParserError(line, lineNumber, characterStart+1, "unmatched parenthesis for parameter")
 	case isShellSpecialVar(s[0]):
-		parameter, err := expandParameter(line, lineNumber, characterStart, s[0:1], envMap)
+		parameter, err := expandParameter(line, lineNumber, characterStart, s[0:1], lookupEnv)
 		return parameter, 1, err
 	default:
 		// Scan alphanumerics.
 		var i int
 		for i = 0; i < len(s) && isAlphaNum(s[i]); i++ {
 		}
-		parameter, err := expandParameter(line, lineNumber, characterStart, s[:i], envMap)
+		parameter, err := expandParameter(line, lineNumber, characterStart, s[:i], lookupEnv)
 		return parameter, i, err
 	}
 }
 
-func expandParameter(line []byte, lineNumber, characterStart int, s []byte, envMap map[string]string) (value []byte, err error) {
-	var varSet bool
+func expandParameter(line []byte, lineNumber, characterStart int, s []byte, lookupEnv lookupEnvFunc) (value []byte, err error) {
+	var envSet bool
 	for i := 0; i < len(s); i++ {
 		switch s[i] {
 		case ':':
@@ -242,10 +246,10 @@ func expandParameter(line []byte, lineNumber, characterStart int, s []byte, envM
 				return nil, newParserError(line, lineNumber, characterStart, "unrecognized modifier")
 			}
 
-			value, varSet = expandEnvMap(s[0:i], envMap)
+			value, envSet = lookupEnv(s[0:i])
 			switch s[i+1] {
 			case '-':
-				if !varSet || len(value) == 0 {
+				if !envSet || len(value) == 0 {
 					return s[i+2:], nil
 				}
 
@@ -260,15 +264,15 @@ func expandParameter(line []byte, lineNumber, characterStart int, s []byte, envM
 				return nil, newParserError(line, lineNumber, characterStart+i+1, "unrecognized modifier")
 			}
 		case '-':
-			value, varSet = expandEnvMap(s[0:i], envMap)
-			if !varSet {
+			value, envSet = lookupEnv(s[0:i])
+			if !envSet {
 				return s[i+1:], nil
 			}
 
 			return value, nil
 		case '+':
-			value, varSet = expandEnvMap(s[0:i], envMap)
-			if varSet {
+			value, envSet = lookupEnv(s[0:i])
+			if envSet {
 				return s[i+1:], nil
 			}
 
@@ -276,17 +280,6 @@ func expandParameter(line []byte, lineNumber, characterStart int, s []byte, envM
 		}
 	}
 
-	value, _ = expandEnvMap(s, envMap)
+	value, _ = lookupEnv(s)
 	return
-}
-
-func expandEnvMap(s []byte, envMap map[string]string) (value []byte, exists bool) {
-	var val string
-
-	if val, exists = envMap[string(s)]; exists {
-		return []byte(val), exists
-	}
-
-	val, exists = os.LookupEnv(string(s))
-	return []byte(val), exists
 }

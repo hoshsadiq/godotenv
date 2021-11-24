@@ -12,13 +12,26 @@ import (
 var noopPresets = make(map[string]string)
 
 func parseAndCompare(t *testing.T, rawEnvLine string, expectedKey string, expectedValue string) {
-	key, value, _ := parseLine(1, []byte(rawEnvLine), noopPresets)
+	t.Helper()
+
+	expandEnv := func(s []byte) (value []byte, exists bool) {
+		var val string
+
+		if val, exists = noopPresets[string(s)]; exists {
+			return []byte(val), exists
+		}
+
+		return LookupEnv(s)
+	}
+
+	key, value, _ := parseLine(1, []byte(rawEnvLine), expandEnv)
 	if string(key) != expectedKey || string(value) != expectedValue {
 		t.Errorf("Expected '%v' to parse as '%v' => '%v', got '%s' => '%s' instead", rawEnvLine, expectedKey, expectedValue, key, value)
 	}
 }
 
 func loadEnvAndCompareValues(t *testing.T, loader func(files ...string) error, envFileName string, expectedValues map[string]string, presets map[string]string) {
+	t.Helper()
 	// first up, clear the env
 	os.Clearenv()
 
@@ -384,7 +397,7 @@ func TestParsing(t *testing.T) {
 	// it 'throws an error if line format is incorrect' do
 	// expect{env('lol$wut')}.to raise_error(Dotenv::FormatError)
 	badlyFormattedLine := "lol$wut"
-	_, _, err := parseLine(1, []byte(badlyFormattedLine), noopPresets)
+	_, _, err := parseLine(1, []byte(badlyFormattedLine), LookupEnv)
 	if err == nil {
 		t.Errorf("Expected \"%v\" to return error, but it didn't", badlyFormattedLine)
 	}

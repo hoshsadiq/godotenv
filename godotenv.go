@@ -93,9 +93,21 @@ func Read(filenames ...string) (envMap map[string]string, err error) {
 	return
 }
 
-// Parse reads an env file from io.Reader, returning a map of keys and values.
-func Parse(r io.Reader) (envMap map[string]string, err error) {
+// ParseWithLookup reads an env file from io.Reader, returning a map of keys and values.
+// It uses the lookupEnv to retrieve environment variables. Parse calls this function with
+// LookupEnv as the lookupEnv argument.
+func ParseWithLookup(r io.Reader, lookupEnv lookupEnvFunc) (envMap map[string]string, err error) {
 	envMap = make(map[string]string)
+
+	expandEnv := func(s []byte) (value []byte, exists bool) {
+		var val string
+
+		if val, exists = envMap[string(s)]; exists {
+			return []byte(val), exists
+		}
+
+		return lookupEnv(s)
+	}
 
 	scanner := bufio.NewScanner(r)
 	lineNumber := 0
@@ -103,7 +115,7 @@ func Parse(r io.Reader) (envMap map[string]string, err error) {
 		lineNumber++
 
 		var key, value []byte
-		key, value, err = parseLine(lineNumber, scanner.Bytes(), envMap)
+		key, value, err = parseLine(lineNumber, scanner.Bytes(), expandEnv)
 
 		if err != nil {
 			return
@@ -116,6 +128,11 @@ func Parse(r io.Reader) (envMap map[string]string, err error) {
 
 	err = scanner.Err()
 	return
+}
+
+// Parse reads an env file from io.Reader, returning a map of keys and values.
+func Parse(r io.Reader) (envMap map[string]string, err error) {
+	return ParseWithLookup(r, LookupEnv)
 }
 
 // Unmarshal reads an env file from a string, returning a map of keys and values.
@@ -154,6 +171,11 @@ func Marshal(envMap map[string]string) (string, error) {
 	}
 	sort.Strings(lines)
 	return strings.Join(lines, "\n"), nil
+}
+
+func LookupEnv(name []byte) (value []byte, exists bool) {
+	val, b := os.LookupEnv(string(name))
+	return []byte(val), b
 }
 
 func filenamesOrDefault(filenames []string) []string {

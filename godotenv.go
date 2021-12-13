@@ -21,8 +21,6 @@ import (
 	"strings"
 )
 
-const doubleQuoteSpecialChars = "\\\n\r\"!$`"
-
 // Load will read your env file(s) and load them into ENV for this process.
 // Call this function as close as possible to the start of your program (ideally in main)
 // If you call Load without any args it will default to loading .env in the current path
@@ -32,15 +30,7 @@ const doubleQuoteSpecialChars = "\\\n\r\"!$`"
 //
 // It's important to note that it WILL NOT OVERRIDE an env variable that already exists - consider the .env file to set dev vars or sensible defaults
 func Load(filenames ...string) (err error) {
-	filenames = filenamesOrDefault(filenames)
-
-	for _, filename := range filenames {
-		err = loadFile(filename, false)
-		if err != nil {
-			return // return early on a spazout
-		}
-	}
-	return
+	return loadFile(filenames, false)
 }
 
 // Overload will read your env file(s) and load them into ENV for this process.
@@ -52,15 +42,7 @@ func Load(filenames ...string) (err error) {
 //
 // It's important to note this WILL OVERRIDE an env variable that already exists - consider the .env file to forcefilly set all vars.
 func Overload(filenames ...string) (err error) {
-	filenames = filenamesOrDefault(filenames)
-
-	for _, filename := range filenames {
-		err = loadFile(filename, true)
-		if err != nil {
-			return // return early on a spazout
-		}
-	}
-	return
+	return loadFile(filenames, true)
 }
 
 // Read all env (with same file loading semantics as Load) but return values as
@@ -157,7 +139,7 @@ func Marshal(envMap map[string]string) (string, error) {
 		if d, err := strconv.Atoi(v); err == nil {
 			lines = append(lines, fmt.Sprintf(`%s=%d`, k, d))
 		} else {
-			lines = append(lines, fmt.Sprintf(`%s="%s"`, k, doubleQuoteEscape(v)))
+			lines = append(lines, fmt.Sprintf(`%s=%s`, k, strconv.Quote(v)))
 		}
 	}
 	sort.Strings(lines)
@@ -176,22 +158,25 @@ func filenamesOrDefault(filenames []string) []string {
 	return filenames
 }
 
-func loadFile(filename string, overload bool) error {
-	envMap, err := readFile(filename)
-	if err != nil {
-		return err
-	}
+func loadFile(filenames []string, overload bool) error {
+	filenames = filenamesOrDefault(filenames)
 
 	currentEnv := map[string]bool{}
-	rawEnv := os.Environ()
-	for _, rawEnvLine := range rawEnv {
-		key := strings.SplitN(rawEnvLine, "=", 2)[0]
+	for _, envLine := range os.Environ() {
+		key := strings.SplitN(envLine, "=", 2)[0]
 		currentEnv[key] = true
 	}
 
-	for key, value := range envMap {
-		if !currentEnv[key] || overload {
-			os.Setenv(key, value)
+	for _, filename := range filenames {
+		envMap, err := readFile(filename)
+		if err != nil {
+			return err
+		}
+
+		for key, value := range envMap {
+			if !currentEnv[key] || overload {
+				_ = os.Setenv(key, value)
+			}
 		}
 	}
 
@@ -206,18 +191,4 @@ func readFile(filename string) (envMap map[string]string, err error) {
 	defer file.Close()
 
 	return Parse(file)
-}
-
-func doubleQuoteEscape(line string) string {
-	for _, c := range doubleQuoteSpecialChars {
-		toReplace := "\\" + string(c)
-		if c == '\n' {
-			toReplace = `\n`
-		}
-		if c == '\r' {
-			toReplace = `\r`
-		}
-		line = strings.ReplaceAll(line, string(c), toReplace)
-	}
-	return line
 }

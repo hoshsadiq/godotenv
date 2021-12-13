@@ -420,37 +420,47 @@ func TestErrorParsing(t *testing.T) {
 	}
 }
 
+// just test some single lines to show the general idea
 func TestWrite(t *testing.T) {
-	writeAndCompare := func(env string, expected string) {
-		envMap, _ := Unmarshal(env)
-		actual, _ := Marshal(envMap)
-		if expected != actual {
-			t.Errorf("Expected '%v' (%v) to write as '%v', got '%v' instead.", env, envMap, expected, actual)
-		}
+	tests := []struct {
+		env      string
+		expected string
+	}{
+		// values are always double-quoted
+		{env: `key=value`, expected: `key="value"`},
+		// non-nested double-quotes are seen as strings
+		{env: `key=va"lu"e`, expected: `key="value"`},
+		// same with single quotes
+		{env: `key=va'lu'e`, expected: `key="value"`},
+		// nested double quoted variables are escaped
+		{env: `key='va"lu"e'`, expected: `key="va\"lu\"e"`},
+		// nested single quoted variables are left alone
+		{env: `key="va'lu'e"`, expected: `key="va'lu'e"`},
+		// newlines, backslashes, and some other special chars are escaped
+		{env: `foo="\n\r\\r!"`, expected: `foo="\n\r\\r!"`},
+		// lines should be sorted
+		{env: "foo=bar\nbaz=buzz", expected: "baz=\"buzz\"\nfoo=\"bar\""},
+		// integers should not be quoted
+		{env: `key="10"`, expected: `key=10`},
 	}
-	// just test some single lines to show the general idea
-	// TestRoundtrip makes most of the good assertions
 
-	// values are always double-quoted
-	writeAndCompare(`key=value`, `key="value"`)
-	// non-nested double-quotes are seen as strings
-	writeAndCompare(`key=va"lu"e`, `key="value"`)
-	// same with single quotes
-	writeAndCompare(`key=va'lu'e`, `key="value"`)
-	// nested double quoted variables are escaped
-	writeAndCompare(`key='va"lu"e'`, `key="va\"lu\"e"`)
-	// nested single quoted variables are left alone
-	writeAndCompare(`key="va'lu'e"`, `key="va'lu'e"`)
-	// newlines, backslashes, and some other special chars are escaped
-	writeAndCompare(`foo="\n\r\\r!"`, `foo="\n\r\\r\!"`)
-	// lines should be sorted
-	writeAndCompare("foo=bar\nbaz=buzz", "baz=\"buzz\"\nfoo=\"bar\"")
-	// integers should not be quoted
-	writeAndCompare(`key="10"`, `key=10`)
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.env, func(t *testing.T) {
+			t.Parallel()
 
+			envMap, _ := Unmarshal(tt.env)
+			actual, _ := Marshal(envMap)
+			if tt.expected != actual {
+				t.Errorf("Expected '%v' (%v) to write as '%v', got '%v' instead.", tt.env, envMap, tt.expected, actual)
+			}
+		})
+	}
 }
 
-func TestRoundtrip(t *testing.T) {
+func TestRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	fixtures := []string{"equals.env", "exported.env", "plain.env", "quoted.env"}
 	for _, fixture := range fixtures {
 		fixtureFilename := fmt.Sprintf("fixtures/%s", fixture)
@@ -469,6 +479,5 @@ func TestRoundtrip(t *testing.T) {
 		if !reflect.DeepEqual(env, roundtripped) {
 			t.Errorf("Expected '%s' to roundtrip as '%v', got '%v' instead", fixtureFilename, env, roundtripped)
 		}
-
 	}
 }

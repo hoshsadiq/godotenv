@@ -11,25 +11,6 @@ import (
 
 var noopPresets = make(map[string]string)
 
-func parseAndCompare(t *testing.T, rawEnvLine string, expectedKey string, expectedValue string) {
-	t.Helper()
-
-	expandEnv := func(s []byte) (value []byte, exists bool) {
-		var val string
-
-		if val, exists = noopPresets[string(s)]; exists {
-			return []byte(val), exists
-		}
-
-		return LookupEnv(s)
-	}
-
-	key, value, _ := parseLine(1, []byte(rawEnvLine), expandEnv)
-	if string(key) != expectedKey || string(value) != expectedValue {
-		t.Errorf("Expected '%v' to parse as '%v' => '%v', got '%s' => '%s' instead", rawEnvLine, expectedKey, expectedValue, key, value)
-	}
-}
-
 func loadEnvAndCompareValues(t *testing.T, loader func(files ...string) error, envFileName string, expectedValues map[string]string, presets map[string]string) {
 	t.Helper()
 	// first up, clear the env
@@ -287,112 +268,129 @@ func TestActualEnvVarsAreLeftAlone(t *testing.T) {
 	}
 }
 
-// Issue https://github.com/joho/godotenv/issues/155
-// Though the issue compares against ruby's dotenv. Because $1 (and others) is a special variable, it needs to be
-// handled as such. Therefore, the result of the issue is as below.
-func TestIssue155(t *testing.T) {
-	t.Parallel()
-	parseAndCompare(t, "VARIABLE_0=$a$0$12$_x", "VARIABLE_0", "2")
-	parseAndCompare(t, `VARIABLE_1="$a$0$12$_x"`, "VARIABLE_1", "2")
-	parseAndCompare(t, `VARIABLE_2='$a$0$12$_x'`, "VARIABLE_2", "$a$0$12$_x")
-	parseAndCompare(t, `VARIABLE_3=       $a$0$12$_x`, "", "")
-}
-
-// https://github.com/joho/godotenv/issues/127
-// Hashes are comments if it's directly followed by whitespace
-func TestJohoIssue127(t *testing.T) {
-	t.Parallel()
-	parseAndCompare(t, `FOO=asd#asd`, "FOO", "asd#asd")
-	parseAndCompare(t, `FOO=asd #asd`, "FOO", "asd")
-}
-
-// https://github.com/joho/godotenv/issues/153
-// Docker compose v2 requires parameter expansion
-func TestJohoIssue153(t *testing.T) {
-	t.Parallel()
-	parseAndCompare(t, `FOO=${FOO:-FOO_ENV_DEFAULT}`, "FOO", "FOO_ENV_DEFAULT")
-	parseAndCompare(t, `BAR="${BAR:-BAR_ENV_DEFAULT}"`, "BAR", "BAR_ENV_DEFAULT")
-
-	os.Setenv("FOO", "bla")
-	os.Setenv("BAR", "bla")
-
-	parseAndCompare(t, `FOO=${FOO:-FOO_ENV_DEFAULT}`, "FOO", "bla")
-	parseAndCompare(t, `BAR="${BAR:-BAR_ENV_DEFAULT}"`, "BAR", "bla")
-}
-
 func TestParsing(t *testing.T) {
-	// unquoted values
-	parseAndCompare(t, "FOO=bar", "FOO", "bar")
+	tests := []struct {
+		rawEnvLine    string
+		expectedKey   string
+		expectedValue string
+		env           map[string]string
+	}{
+		// unquoted values
+		{rawEnvLine: "FOO=bar", expectedKey: "FOO", expectedValue: "bar"},
 
-	// parses values with spaces around equal sign
-	parseAndCompare(t, "FOO =bar", "", "")
-	parseAndCompare(t, "FOO= bar", "", "")
+		// parses values with spaces around equal sign
+		{rawEnvLine: "FOO =bar", expectedKey: "", expectedValue: ""},
+		{rawEnvLine: "FOO= bar", expectedKey: "", expectedValue: ""},
 
-	// parses double quoted values
-	parseAndCompare(t, `FOO="bar"`, "FOO", "bar")
+		// parses double quoted values
+		{rawEnvLine: `FOO="bar"`, expectedKey: "FOO", expectedValue: "bar"},
 
-	// parses single quoted values
-	parseAndCompare(t, "FOO='bar'", "FOO", "bar")
+		// parses single quoted values
+		{rawEnvLine: "FOO='bar'", expectedKey: "FOO", expectedValue: "bar"},
 
-	// parses escaped double quotes
-	parseAndCompare(t, `FOO="escaped\"bar"`, "FOO", `escaped"bar`)
+		// parses escaped double quotes
+		{rawEnvLine: `FOO="escaped\"bar"`, expectedKey: "FOO", expectedValue: `escaped"bar`},
 
-	// parses single quotes inside double quotes
-	parseAndCompare(t, `FOO="'d'"`, "FOO", `'d'`)
+		// parses single quotes inside double quotes
+		{rawEnvLine: `FOO="'d'"`, expectedKey: "FOO", expectedValue: `'d'`},
 
-	// parses non-yaml options with colons
-	parseAndCompare(t, "OPTION_A=1:B", "OPTION_A", "1:B")
+		// parses non-yaml options with colons
+		{rawEnvLine: "OPTION_A=1:B", expectedKey: "OPTION_A", expectedValue: "1:B"},
 
-	// parses export keyword
-	parseAndCompare(t, "export OPTION_A=2", "OPTION_A", "2")
-	parseAndCompare(t, `export OPTION_B='\n'`, "OPTION_B", "\\n")
-	parseAndCompare(t, "export exportFoo=2", "exportFoo", "2")
-	parseAndCompare(t, "exportFOO=2", "exportFOO", "2")
-	parseAndCompare(t, "export_FOO=2", "export_FOO", "2")
-	parseAndCompare(t, "export.FOO=2", "", "")
-	parseAndCompare(t, "export\tOPTION_A=2", "OPTION_A", "2")
-	parseAndCompare(t, "  export OPTION_A=2", "OPTION_A", "2")
-	parseAndCompare(t, "\texport OPTION_A=2", "OPTION_A", "2")
-	parseAndCompare(t, `FOO="bar\nbaz"`, "FOO", "bar\nbaz")
-	parseAndCompare(t, "FOO.BAR=foobar", "", "")
+		// parses export keyword
+		{rawEnvLine: "export OPTION_A=2", expectedKey: "OPTION_A", expectedValue: "2"},
+		{rawEnvLine: `export OPTION_B='\n'`, expectedKey: "OPTION_B", expectedValue: "\\n"},
+		{rawEnvLine: "export exportFoo=2", expectedKey: "exportFoo", expectedValue: "2"},
+		{rawEnvLine: "exportFOO=2", expectedKey: "exportFOO", expectedValue: "2"},
+		{rawEnvLine: "export_FOO=2", expectedKey: "export_FOO", expectedValue: "2"},
+		{rawEnvLine: "export.FOO=2", expectedKey: "", expectedValue: ""},
+		{rawEnvLine: "export\tOPTION_A=2", expectedKey: "OPTION_A", expectedValue: "2"},
+		{rawEnvLine: "  export OPTION_A=2", expectedKey: "OPTION_A", expectedValue: "2"},
+		{rawEnvLine: "\texport OPTION_A=2", expectedKey: "OPTION_A", expectedValue: "2"},
+		{rawEnvLine: `FOO="bar\nbaz"`, expectedKey: "FOO", expectedValue: "bar\nbaz"},
+		{rawEnvLine: "FOO.BAR=foobar", expectedKey: "", expectedValue: ""},
 
-	// it 'parses varibales with several "=" in the value' do
-	// expect(env('FOO=foobar=')).to eql('FOO' => 'foobar=')
-	parseAndCompare(t, "FOO=foobar=", "FOO", "foobar=")
+		// it 'parses varibales with several "=" in the value' do
+		// expect(env('FOO=foobar=')).to eql('FOO' => 'foobar=')
+		{rawEnvLine: "FOO=foobar=", expectedKey: "FOO", expectedValue: "foobar="},
 
-	// it 'strips unquoted values' do
-	// expect(env('foo=bar ')).to eql('foo' => 'bar') # not 'bar '
-	parseAndCompare(t, "FOO=bar ", "FOO", "bar")
+		// it 'strips unquoted values' do
+		// expect(env('foo=bar ')).to eql('foo' => 'bar') # not 'bar '
+		{rawEnvLine: "FOO=bar ", expectedKey: "FOO", expectedValue: "bar"},
 
-	// it 'ignores inline comments' do
-	// expect(env("foo=bar # this is foo")).to eql('foo' => 'bar')
-	parseAndCompare(t, "FOO=bar # this is foo", "FOO", "bar")
+		// it 'ignores inline comments' do
+		// expect(env("foo=bar # this is foo")).to eql('foo' => 'bar')
+		{rawEnvLine: "FOO=bar # this is foo", expectedKey: "FOO", expectedValue: "bar"},
 
-	// it 'allows # in quoted value' do
-	// expect(env('foo="bar#baz" # comment')).to eql('foo' => 'bar#baz')
-	parseAndCompare(t, `FOO="bar#baz" # comment`, "FOO", "bar#baz")
-	parseAndCompare(t, "FOO='bar#baz' # comment", "FOO", "bar#baz")
-	parseAndCompare(t, `FOO="bar#baz#bang" # comment`, "FOO", "bar#baz#bang")
+		// it 'allows # in quoted value' do
+		// expect(env('foo="bar#baz" # comment')).to eql('foo' => 'bar#baz')
+		{rawEnvLine: `FOO="bar#baz" # comment`, expectedKey: "FOO", expectedValue: "bar#baz"},
+		{rawEnvLine: "FOO='bar#baz' # comment", expectedKey: "FOO", expectedValue: "bar#baz"},
+		{rawEnvLine: `FOO="bar#baz#bang" # comment`, expectedKey: "FOO", expectedValue: "bar#baz#bang"},
 
-	// it 'parses # in quoted values' do
-	// expect(env('foo="ba#r"')).to eql('foo' => 'ba#r')
-	// expect(env("foo='ba#r'")).to eql('foo' => 'ba#r')
-	parseAndCompare(t, `FOO="ba#r"`, "FOO", "ba#r")
-	parseAndCompare(t, "FOO='ba#r'", "FOO", "ba#r")
+		// it 'parses # in quoted values' do
+		// expect(env('foo="ba#r"')).to eql('foo' => 'ba#r')
+		// expect(env("foo='ba#r'")).to eql('foo' => 'ba#r')
+		{rawEnvLine: `FOO="ba#r"`, expectedKey: "FOO", expectedValue: "ba#r"},
+		{rawEnvLine: "FOO='ba#r'", expectedKey: "FOO", expectedValue: "ba#r"},
 
-	// newlines and backslashes should be escaped
-	parseAndCompare(t, `FOO="bar\n\ b\az"`, "FOO", "bar\n baz")
-	parseAndCompare(t, `FOO="bar\\\n\ b\az"`, "FOO", "bar\\\n baz")
-	parseAndCompare(t, `FOO="bar\\r\ b\az"`, "FOO", "bar\\r baz")
+		// newlines and backslashes should be escaped
+		{rawEnvLine: `FOO="bar\n\ b\az"`, expectedKey: "FOO", expectedValue: "bar\n baz"},
+		{rawEnvLine: `FOO="bar\\\n\ b\az"`, expectedKey: "FOO", expectedValue: "bar\\\n baz"},
+		{rawEnvLine: `FOO="bar\\r\ b\az"`, expectedKey: "FOO", expectedValue: "bar\\r baz"},
 
-	parseAndCompare(t, `="value"`, "", "")
-	parseAndCompare(t, `KEY="`, "", "")
-	parseAndCompare(t, `KEY="value`, "", "")
+		{rawEnvLine: `="value"`, expectedKey: "", expectedValue: ""},
+		{rawEnvLine: `KEY="`, expectedKey: "", expectedValue: ""},
+		{rawEnvLine: `KEY="value`, expectedKey: "", expectedValue: ""},
 
-	// leading whitespace should be ignored
-	parseAndCompare(t, " KEY =value", "", "")
-	parseAndCompare(t, "   KEY=value", "KEY", "value")
-	parseAndCompare(t, "\tKEY=value", "KEY", "value")
+		// leading whitespace should be ignored
+		{rawEnvLine: " KEY =value", expectedKey: "", expectedValue: ""},
+		{rawEnvLine: "   KEY=value", expectedKey: "KEY", expectedValue: "value"},
+		{rawEnvLine: "\tKEY=value", expectedKey: "KEY", expectedValue: "value"},
+
+		// https://github.com/joho/godotenv/issues/153
+		// Docker compose v2 requires parameter expansion
+		{rawEnvLine: `FOO=${FOO:-FOO_ENV_DEFAULT}`, expectedKey: "FOO", expectedValue: "FOO_ENV_DEFAULT"},
+		{rawEnvLine: `BAR="${BAR:-BAR_ENV_DEFAULT}"`, expectedKey: "BAR", expectedValue: "BAR_ENV_DEFAULT"},
+		{rawEnvLine: `FOO=${FOO:-FOO_ENV_DEFAULT}`, env: map[string]string{"FOO": "bla"}, expectedKey: "FOO", expectedValue: "bla"},
+		{rawEnvLine: `BAR="${BAR:-BAR_ENV_DEFAULT}"`, env: map[string]string{"BAR": "bla"}, expectedKey: "BAR", expectedValue: "bla"},
+
+		// Issue https://github.com/joho/godotenv/issues/155
+		// Though the issue compares against ruby's dotenv. Because $1 (and others) is a special variable, it needs to be
+		// handled as such. Therefore, the result of the issue is as below.
+		{rawEnvLine: "VARIABLE_0=$a$0$12$_x", expectedKey: "VARIABLE_0", expectedValue: "2"},
+		{rawEnvLine: `VARIABLE_1="$a$0$12$_x"`, expectedKey: "VARIABLE_1", expectedValue: "2"},
+		{rawEnvLine: `VARIABLE_2='$a$0$12$_x'`, expectedKey: "VARIABLE_2", expectedValue: "$a$0$12$_x"},
+		{rawEnvLine: `VARIABLE_3=       $a$0$12$_x`, expectedKey: "", expectedValue: ""},
+
+		// https://github.com/joho/godotenv/issues/127
+		// Hashes are comments if it's directly followed by whitespace
+		{rawEnvLine: `FOO=asd#asd`, expectedKey: "FOO", expectedValue: "asd#asd"},
+		{rawEnvLine: `FOO=asd #asd`, expectedKey: "FOO", expectedValue: "asd"},
+	}
+
+	t.Parallel()
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.rawEnvLine, func(t *testing.T) {
+			t.Parallel()
+
+			expandEnv := func(s []byte) (value []byte, exists bool) {
+				var val string
+
+				if val, exists = tt.env[string(s)]; exists {
+					return []byte(val), exists
+				}
+
+				return LookupEnv(s)
+			}
+
+			key, value, _ := parseLine(1, []byte(tt.rawEnvLine), expandEnv)
+			if string(key) != tt.expectedKey || string(value) != tt.expectedValue {
+				t.Errorf("Expected '%v' to parse as '%v' => '%v', got '%s' => '%s' instead", tt.rawEnvLine, tt.expectedKey, tt.expectedValue, key, value)
+			}
+		})
+	}
 
 	// it 'throws an error if line format is incorrect' do
 	// expect{env('lol$wut')}.to raise_error(Dotenv::FormatError)
@@ -404,15 +402,18 @@ func TestParsing(t *testing.T) {
 }
 
 func TestErrorReadDirectory(t *testing.T) {
+	t.Parallel()
+
 	envFileName := "fixtures/"
 	envMap, err := Read(envFileName)
-
 	if err == nil {
 		t.Errorf("Expected error, got %v", envMap)
 	}
 }
 
 func TestErrorParsing(t *testing.T) {
+	t.Parallel()
+
 	envFileName := "fixtures/invalid1.env"
 	envMap, err := Read(envFileName)
 	if err == nil {
@@ -444,6 +445,7 @@ func TestWrite(t *testing.T) {
 		{env: `key="10"`, expected: `key=10`},
 	}
 
+	t.Parallel()
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.env, func(t *testing.T) {

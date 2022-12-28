@@ -62,9 +62,13 @@ ParseLoop:
 				state = stateValue
 			case c == '#':
 				break ParseLoop
-			case c == ' ', c == '\t':
+			case c == ' ', c == '\t', c == '\r', c == '\n':
 				if bytes.Equal(key, []byte(exportPrefix)) {
 					key = key[:0]
+				}
+
+				if c == '\n' {
+					p.lineNumber++
 				}
 
 				// ignore empty space
@@ -72,7 +76,7 @@ ParseLoop:
 					continue
 				}
 
-				return p.newParserError(j, "unexpected space in key")
+				return p.newParserError(j, "unexpected whitespace in key")
 			case unicode.IsNumber(rune(c)):
 				if len(key) == 0 {
 					return p.newParserError(j, "invalid character in key name")
@@ -83,9 +87,6 @@ ParseLoop:
 			case unicode.IsLetter(rune(c)):
 				key = append(key, c)
 			default:
-				if len(key) == 0 {
-					continue
-				}
 				return p.newParserError(j, "invalid character in key name")
 			}
 		case stateValue:

@@ -363,6 +363,12 @@ func TestParsing(t *testing.T) {
 		{rawEnvLine: `FOO=${FOO:-FOO_ENV_DEFAULT}`, env: map[string]string{"FOO": "bla"}, expectedKey: "FOO", expectedValue: "bla"},
 		{rawEnvLine: `BAR="${BAR:-BAR_ENV_DEFAULT}"`, env: map[string]string{"BAR": "bla"}, expectedKey: "BAR", expectedValue: "bla"},
 
+		// Additional shell expansions
+		{rawEnvLine: `FOO=${FOO:+FOO_ENV_DEFAULT}`, expectedKey: "FOO", expectedValue: ""},
+		{rawEnvLine: `BAR="${BAR:+BAR_ENV_DEFAULT}"`, expectedKey: "BAR", expectedValue: ""},
+		{rawEnvLine: `FOO=${FOO:+FOO_ENV_DEFAULT}`, env: map[string]string{"FOO": "bla"}, expectedKey: "FOO", expectedValue: "FOO_ENV_DEFAULT"},
+		{rawEnvLine: `BAR="${BAR:+BAR_ENV_DEFAULT}"`, env: map[string]string{"BAR": "bla"}, expectedKey: "BAR", expectedValue: "BAR_ENV_DEFAULT"},
+
 		// Issue https://github.com/joho/godotenv/issues/155
 		// Though the issue compares against ruby's dotenv. Because $1 (and others) is a special variable, it needs to be
 		// handled as such. Therefore, the result of the issue is as below.

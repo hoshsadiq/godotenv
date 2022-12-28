@@ -1,6 +1,7 @@
 package godotenv
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 )
@@ -17,9 +18,11 @@ func (p parserError) Error() string {
 	return fmt.Sprintf("godotenv: %s on line %d\n\t%s\n\t%s%s", p.message, p.lineNumber, p.line, strings.Repeat(" ", p.characterNumber-1), "^ Right here")
 }
 
-func newParserError(line []byte, lineNumber int, characterNumber int, message string) parserError {
+func (p *parser) newParserError(characterNumber int, message string) parserError {
+	// this is not ideal, but it's only on error, so should be okay, maybe?
+	line := bytes.SplitN(p.data, []byte("\n"), p.lineNumber+1)[p.lineNumber-1]
 	return parserError{
-		lineNumber:      lineNumber,
+		lineNumber:      p.lineNumber,
 		characterNumber: characterNumber,
 		line:            line,
 		message:         message,
@@ -31,9 +34,9 @@ type invalidCharacterError struct {
 	char byte
 }
 
-func newInvalidCharacterError(line []byte, lineNumber int, characterNumber int, char byte) invalidCharacterError {
+func (p *parser) newInvalidCharacterError(characterNumber int, char byte) invalidCharacterError {
 	return invalidCharacterError{
-		parserError: newParserError(line, lineNumber, characterNumber, fmt.Sprintf("invalid value character: 0x%0.2x", char)),
+		parserError: p.newParserError(characterNumber, fmt.Sprintf("invalid value character: 0x%0.2x", char)),
 		char:        char,
 	}
 }

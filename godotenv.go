@@ -12,7 +12,6 @@
 package godotenv
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -71,6 +70,15 @@ func Read(filenames ...string) (envMap map[string]string, err error) {
 // It uses the lookupEnv to retrieve environment variables. Parse calls this function with
 // LookupEnv as the lookupEnv argument.
 func ParseWithLookup(r io.Reader, lookupEnv lookupEnvFunc) (envMap map[string]string, err error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseWithLookup(data, lookupEnv)
+}
+
+func parseWithLookup(d []byte, lookupEnv lookupEnvFunc) (envMap map[string]string, err error) {
 	envMap = make(map[string]string)
 
 	expandEnv := func(s []byte) (value []byte, exists bool) {
@@ -83,24 +91,11 @@ func ParseWithLookup(r io.Reader, lookupEnv lookupEnvFunc) (envMap map[string]st
 		return lookupEnv(s)
 	}
 
-	scanner := bufio.NewScanner(r)
-	lineNumber := 0
-	for scanner.Scan() {
-		lineNumber++
+	parser := newParser(d)
 
-		var key, value []byte
-		key, value, err = parseLine(lineNumber, scanner.Bytes(), expandEnv)
+	err = parser.parse(&envMap, expandEnv)
 
-		if err != nil {
-			return
-		}
-
-		if len(key) > 0 {
-			envMap[string(key)] = string(value)
-		}
-	}
-
-	return envMap, scanner.Err()
+	return envMap, err
 }
 
 // Parse reads an env file from io.Reader, returning a map of keys and values.

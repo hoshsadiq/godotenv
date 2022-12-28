@@ -22,7 +22,7 @@ func loadEnvAndCompareValues(t *testing.T, loader func(files ...string) error, e
 
 	err := loader(envFileName)
 	if err != nil {
-		t.Fatalf("Error loading %v", envFileName)
+		t.Fatalf("Error loading %v: %s", envFileName, err)
 	}
 
 	for k := range expectedValues {
@@ -167,15 +167,23 @@ func TestLoadEqualsEnv(t *testing.T) {
 func TestLoadQuotedEnv(t *testing.T) {
 	envFileName := "fixtures/quoted.env"
 	expectedValues := map[string]string{
-		"OPTION_A": "1",
-		"OPTION_B": "2",
-		"OPTION_C": "",
-		"OPTION_D": "\\n",
-		"OPTION_E": "1",
-		"OPTION_F": "2",
-		"OPTION_G": "",
-		"OPTION_H": "\n",
-		"OPTION_I": "echo 'asd'",
+		"OPTION_SINGLE_A": "1",
+		"OPTION_SINGLE_B": "2",
+		"OPTION_SINGLE_C": "",
+		"OPTION_SINGLE_D": "\\n",
+		"OPTION_SINGLE_E": `echo "asd"`,
+		"OPTION_SINGLE_F": "echo asd",
+		"OPTION_SINGLE_G": "1\n2",
+		"OPTION_SINGLE_H": "1\n2\n3 is \\'quoted\\'",
+
+		"OPTION_DOUBLE_A": "1",
+		"OPTION_DOUBLE_B": "2",
+		"OPTION_DOUBLE_C": "",
+		"OPTION_DOUBLE_D": "\n",
+		"OPTION_DOUBLE_E": "echo 'asd'",
+		"OPTION_DOUBLE_F": "echo asd",
+		"OPTION_DOUBLE_G": "1\n2",
+		"OPTION_DOUBLE_H": "1\n2\n3 is \"quoted\"",
 	}
 
 	loadEnvAndCompareValues(t, Load, envFileName, expectedValues, noopPresets)
@@ -250,7 +258,7 @@ func TestExpanding(t *testing.T) {
 			}
 			for k, v := range tt.expected {
 				if strings.Compare(env[k], v) != 0 {
-					t.Errorf("Expected: %s, Actual: %s", v, env[k])
+					t.Errorf("Expected: %q, Actual: %q", v, env[k])
 				}
 			}
 		})
@@ -375,29 +383,38 @@ func TestParsing(t *testing.T) {
 		t.Run(tt.rawEnvLine, func(t *testing.T) {
 			t.Parallel()
 
+			if tt.env == nil {
+				tt.env = make(map[string]string, 0)
+			}
+			newEnv := tt.env
+
 			expandEnv := func(s []byte) (value []byte, exists bool) {
 				var val string
 
-				if val, exists = tt.env[string(s)]; exists {
+				if val, exists = newEnv[string(s)]; exists {
 					return []byte(val), exists
 				}
 
 				return LookupEnv(s)
 			}
 
-			key, value, _ := parseLine(1, []byte(tt.rawEnvLine), expandEnv)
-			if string(key) != tt.expectedKey || string(value) != tt.expectedValue {
-				t.Errorf("Expected '%v' to parse as '%v' => '%v', got '%s' => '%s' instead", tt.rawEnvLine, tt.expectedKey, tt.expectedValue, key, value)
+			p := newParser([]byte(tt.rawEnvLine))
+
+			_ = p.parse(&newEnv, expandEnv)
+			if tt.expectedKey == "" {
+				if !reflect.DeepEqual(tt.env, newEnv) {
+					t.Errorf("Expected '%v' to parse as '%v' => '%v', got %+v", tt.rawEnvLine, tt.expectedKey, tt.expectedValue, newEnv)
+				}
+			} else {
+				value, ok := newEnv[tt.expectedKey]
+				if !ok {
+					t.Errorf("Expected '%v' to parse as '%v' => '%v', got %+v", tt.rawEnvLine, tt.expectedKey, tt.expectedValue, newEnv)
+				}
+				if value != tt.expectedValue {
+					t.Errorf("Expected '%v' to parse as '%v' => '%v', got %+v", tt.rawEnvLine, tt.expectedKey, tt.expectedValue, newEnv)
+				}
 			}
 		})
-	}
-
-	// it 'throws an error if line format is incorrect' do
-	// expect{env('lol$wut')}.to raise_error(Dotenv::FormatError)
-	badlyFormattedLine := "lol$wut"
-	_, _, err := parseLine(1, []byte(badlyFormattedLine), LookupEnv)
-	if err == nil {
-		t.Errorf("Expected \"%v\" to return error, but it didn't", badlyFormattedLine)
 	}
 }
 
@@ -427,6 +444,8 @@ func TestWrite(t *testing.T) {
 		env      string
 		expected string
 	}{
+		// values are always double-quoted
+		{env: `key="test\${hello}test"`, expected: `key="test${hello}test"`},
 		// values are always double-quoted
 		{env: `key=value`, expected: `key="value"`},
 		// non-nested double-quotes are seen as strings

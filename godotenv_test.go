@@ -9,32 +9,107 @@ import (
 	"testing"
 )
 
-var noopPresets = make(map[string]string)
+func TestFileLoading(t *testing.T) {
+	tests := []struct {
+		name           string
+		envFileName    string
+		presets        map[string]string
+		expectedValues map[string]string
+	}{
+		{
+			name:        "equals",
+			envFileName: "fixtures/equals.env",
+			expectedValues: map[string]string{
+				"OPTION_A": "postgres://localhost:5432/database?sslmode=disable",
+			},
+		},
+		{
+			name:        "quoted",
+			envFileName: "fixtures/quoted.env",
+			expectedValues: map[string]string{
+				"OPTION_SINGLE_A": "1",
+				"OPTION_SINGLE_B": "2",
+				"OPTION_SINGLE_C": "",
+				"OPTION_SINGLE_D": "\\n",
+				"OPTION_SINGLE_E": `echo "asd"`,
+				"OPTION_SINGLE_F": "echo asd",
+				"OPTION_SINGLE_G": "1\n2",
+				"OPTION_SINGLE_H": "1\n2\n3 is \\'quoted\\'",
 
-func loadEnvAndCompareValues(t *testing.T, loader func(files ...string) error, envFileName string, expectedValues map[string]string, presets map[string]string) {
-	t.Helper()
-	// first up, clear the env
-	os.Clearenv()
-
-	for k, v := range presets {
-		os.Setenv(k, v)
+				"OPTION_DOUBLE_A": "1",
+				"OPTION_DOUBLE_B": "2",
+				"OPTION_DOUBLE_C": "",
+				"OPTION_DOUBLE_D": "\n",
+				"OPTION_DOUBLE_E": "echo 'asd'",
+				"OPTION_DOUBLE_F": "echo asd",
+				"OPTION_DOUBLE_G": "1\n2",
+				"OPTION_DOUBLE_H": "1\n2\n3 is \"quoted\"",
+			},
+		},
+		{
+			name:        "substitutions",
+			envFileName: "fixtures/substitutions.env",
+			expectedValues: map[string]string{
+				"OPTION_A": "1",
+				"OPTION_B": "1",
+				"OPTION_C": "1",
+				"OPTION_D": "11",
+				"OPTION_E": "",
+			},
+		},
+		{
+			name:        "exported",
+			envFileName: "fixtures/exported.env",
+			expectedValues: map[string]string{
+				"OPTION_A": "2",
+				"OPTION_B": "\\n",
+			},
+		},
+		{
+			name:        "plain",
+			envFileName: "fixtures/plain.env",
+			expectedValues: map[string]string{
+				"OPTION_A": "1",
+				"OPTION_B": "2",
+				"OPTION_C": "",
+			},
+		},
 	}
 
-	err := loader(envFileName)
-	if err != nil {
-		t.Fatalf("Error loading %v: %s", envFileName, err)
-	}
+	t.Parallel()
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	for k := range expectedValues {
-		envValue := os.Getenv(k)
-		v := expectedValues[k]
-		if envValue != v {
-			t.Errorf("Mismatch for key '%v': expected '%v' got '%v'", k, v, envValue)
-		}
+			file, err := os.Open(tt.envFileName)
+			if err != nil {
+				return
+			}
+			defer file.Close()
+
+			envMap, err := ParseWithLookup(file, func(name []byte) (value []byte, exists bool) {
+				val, exists := tt.presets[string(name)]
+				return []byte(val), exists
+			})
+			if err != nil {
+				t.Fatalf("Error loading %v: %s", tt.envFileName, err)
+			}
+
+			for k := range tt.expectedValues {
+				envValue := envMap[k]
+				v := tt.expectedValues[k]
+				if envValue != v {
+					t.Errorf("Mismatch for key '%v': expected '%v' got '%v'", k, v, envValue)
+				}
+			}
+		})
 	}
 }
 
 func TestLoadWithNoArgsLoadsDotEnv(t *testing.T) {
+	t.Parallel()
+
 	err := Load()
 	pathError := err.(*os.PathError)
 	if pathError == nil || pathError.Op != "open" || pathError.Path != ".env" {
@@ -43,6 +118,8 @@ func TestLoadWithNoArgsLoadsDotEnv(t *testing.T) {
 }
 
 func TestOverloadWithNoArgsOverloadsDotEnv(t *testing.T) {
+	t.Parallel()
+
 	err := Overload()
 	pathError := err.(*os.PathError)
 	if pathError == nil || pathError.Op != "open" || pathError.Path != ".env" {
@@ -51,6 +128,8 @@ func TestOverloadWithNoArgsOverloadsDotEnv(t *testing.T) {
 }
 
 func TestLoadFileNotFound(t *testing.T) {
+	t.Parallel()
+
 	err := Load("somefilethatwillneverexistever.env")
 	if err == nil {
 		t.Error("File wasn't found but Load didn't return an error")
@@ -58,6 +137,8 @@ func TestLoadFileNotFound(t *testing.T) {
 }
 
 func TestOverloadFileNotFound(t *testing.T) {
+	t.Parallel()
+
 	err := Overload("somefilethatwillneverexistever.env")
 	if err == nil {
 		t.Error("File wasn't found but Overload didn't return an error")
@@ -65,6 +146,8 @@ func TestOverloadFileNotFound(t *testing.T) {
 }
 
 func TestReadPlainEnv(t *testing.T) {
+	t.Parallel()
+
 	envFileName := "fixtures/plain.env"
 	expectedValues := map[string]string{
 		"OPTION_A": "1",
@@ -89,6 +172,8 @@ func TestReadPlainEnv(t *testing.T) {
 }
 
 func TestParse(t *testing.T) {
+	t.Parallel()
+
 	envMap, err := Parse(bytes.NewReader([]byte("ONE=1\nTWO='2'")))
 	expectedValues := map[string]string{
 		"ONE": "1",
@@ -108,98 +193,63 @@ func TestLoadDoesNotOverride(t *testing.T) {
 	envFileName := "fixtures/plain.env"
 
 	// ensure NO overload
-	presets := map[string]string{
+	vars := map[string]string{
 		"OPTION_A": "do_not_override",
 		"OPTION_B": "",
 	}
 
-	expectedValues := map[string]string{
-		"OPTION_A": "do_not_override",
-		"OPTION_B": "",
+	// first up, clear the env
+	os.Clearenv()
+
+	for k, v := range vars {
+		_ = os.Setenv(k, v)
 	}
-	loadEnvAndCompareValues(t, Load, envFileName, expectedValues, presets)
+
+	err := Load(envFileName)
+	if err != nil {
+		t.Fatalf("Error loading %v: %s", envFileName, err)
+	}
+
+	for k := range vars {
+		envValue := os.Getenv(k)
+		v := vars[k]
+		if envValue != v {
+			t.Errorf("Mismatch for key '%v': expected '%v' got '%v'", k, v, envValue)
+		}
+	}
 }
 
-func TestOveroadDoesOverride(t *testing.T) {
+func TestOverloadDoesOverride(t *testing.T) {
 	envFileName := "fixtures/plain.env"
 
 	// ensure NO overload
-	presets := map[string]string{
+	vars := map[string]string{
 		"OPTION_A": "do_not_override",
 	}
 
 	expectedValues := map[string]string{
 		"OPTION_A": "1",
 	}
-	loadEnvAndCompareValues(t, Overload, envFileName, expectedValues, presets)
-}
 
-func TestLoadPlainEnv(t *testing.T) {
-	envFileName := "fixtures/plain.env"
-	expectedValues := map[string]string{
-		"OPTION_A": "1",
-		"OPTION_B": "2",
-		"OPTION_C": "",
+	// first up, clear the env
+	os.Clearenv()
+
+	for k, v := range vars {
+		_ = os.Setenv(k, v)
 	}
 
-	loadEnvAndCompareValues(t, Load, envFileName, expectedValues, noopPresets)
-}
-
-func TestLoadExportedEnv(t *testing.T) {
-	envFileName := "fixtures/exported.env"
-	expectedValues := map[string]string{
-		"OPTION_A": "2",
-		"OPTION_B": "\\n",
+	err := Overload(envFileName)
+	if err != nil {
+		t.Fatalf("Error loading %v: %s", envFileName, err)
 	}
 
-	loadEnvAndCompareValues(t, Load, envFileName, expectedValues, noopPresets)
-}
-
-func TestLoadEqualsEnv(t *testing.T) {
-	envFileName := "fixtures/equals.env"
-	expectedValues := map[string]string{
-		"OPTION_A": "postgres://localhost:5432/database?sslmode=disable",
+	for k := range expectedValues {
+		envValue := os.Getenv(k)
+		v := expectedValues[k]
+		if envValue != v {
+			t.Errorf("Mismatch for key '%v': expected '%v' got '%v'", k, v, envValue)
+		}
 	}
-
-	loadEnvAndCompareValues(t, Load, envFileName, expectedValues, noopPresets)
-}
-
-func TestLoadQuotedEnv(t *testing.T) {
-	envFileName := "fixtures/quoted.env"
-	expectedValues := map[string]string{
-		"OPTION_SINGLE_A": "1",
-		"OPTION_SINGLE_B": "2",
-		"OPTION_SINGLE_C": "",
-		"OPTION_SINGLE_D": "\\n",
-		"OPTION_SINGLE_E": `echo "asd"`,
-		"OPTION_SINGLE_F": "echo asd",
-		"OPTION_SINGLE_G": "1\n2",
-		"OPTION_SINGLE_H": "1\n2\n3 is \\'quoted\\'",
-
-		"OPTION_DOUBLE_A": "1",
-		"OPTION_DOUBLE_B": "2",
-		"OPTION_DOUBLE_C": "",
-		"OPTION_DOUBLE_D": "\n",
-		"OPTION_DOUBLE_E": "echo 'asd'",
-		"OPTION_DOUBLE_F": "echo asd",
-		"OPTION_DOUBLE_G": "1\n2",
-		"OPTION_DOUBLE_H": "1\n2\n3 is \"quoted\"",
-	}
-
-	loadEnvAndCompareValues(t, Load, envFileName, expectedValues, noopPresets)
-}
-
-func TestSubstitutions(t *testing.T) {
-	envFileName := "fixtures/substitutions.env"
-	expectedValues := map[string]string{
-		"OPTION_A": "1",
-		"OPTION_B": "1",
-		"OPTION_C": "1",
-		"OPTION_D": "11",
-		"OPTION_E": "",
-	}
-
-	loadEnvAndCompareValues(t, Load, envFileName, expectedValues, noopPresets)
 }
 
 func TestExpanding(t *testing.T) {
@@ -250,8 +300,11 @@ func TestExpanding(t *testing.T) {
 		},
 	}
 
+	t.Parallel()
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			env, err := Parse(strings.NewReader(tt.input))
 			if err != nil {
 				t.Errorf("Error: %s", err.Error())
@@ -430,7 +483,7 @@ func TestErrorReadDirectory(t *testing.T) {
 	envFileName := "fixtures/"
 	envMap, err := Read(envFileName)
 	if err == nil {
-		t.Errorf("Expected error, got %v", envMap)
+		t.Errorf("Expected error, got %v: %s", envMap, err)
 	}
 }
 
@@ -440,7 +493,7 @@ func TestErrorParsing(t *testing.T) {
 	envFileName := "fixtures/invalid1.env"
 	envMap, err := Read(envFileName)
 	if err == nil {
-		t.Errorf("Expected error, got %v", envMap)
+		t.Errorf("Expected error, got %v: %s", envMap, err)
 	}
 }
 

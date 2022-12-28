@@ -74,6 +74,30 @@ func TestFileLoading(t *testing.T) {
 				"OPTION_C": "",
 			},
 		},
+		{
+			name:        "all",
+			envFileName: "fixtures/all.env",
+			expectedValues: map[string]string{
+				"OPTION_A": "1",
+				"OPTION_B": "1#realvalue",
+				"OPTION_C": "1",
+				"OPTION_D": "1",
+				"OPTION_E": "1",
+				"OPTION_F": "1#realvalue",
+				"OPTION_G": "11#realvalue",
+				"OPTION_H": "",
+				"OPTION_I": "1",
+				"OPTION_J": "${OPTION_A}",
+				"OPTION_K": "${OPTION_NOT_DEFINED:-default}",
+				"OPTION_L": "${OPTION_A:+default}",
+				"OPTION_M": "1\n2",
+				"OPTION_N": "1",
+				"OPTION_O": "1\n2",
+				"OPTION_P": "1",
+				"OPTION_Q": "default",
+				"OPTION_R": "default",
+			},
+		},
 	}
 
 	t.Parallel()
@@ -96,12 +120,8 @@ func TestFileLoading(t *testing.T) {
 				t.Fatalf("Error loading %v: %s", tt.envFileName, err)
 			}
 
-			for k := range tt.expectedValues {
-				envValue := envMap[k]
-				v := tt.expectedValues[k]
-				if envValue != v {
-					t.Errorf("Mismatch for key '%v': expected '%v' got '%v'", k, v, envValue)
-				}
+			if !reflect.DeepEqual(tt.expectedValues, envMap) {
+				t.Errorf("Mismatch env vars: expected '%v' got '%v'", tt.expectedValues, envMap)
 			}
 		})
 	}

@@ -47,7 +47,7 @@ func (p *parser) parse(m *map[string]string, lookupEnv lookupEnvFunc) (err error
 	state := stateKey
 
 	var j int
-ParseLoop:
+
 	for j = 0; j < len(p.data); j++ {
 		c := p.data[j]
 
@@ -61,7 +61,12 @@ ParseLoop:
 
 				state = stateValue
 			case c == '#':
-				break ParseLoop
+				if unicode.IsSpace(rune(p.data[j-1])) {
+					j += bytes.IndexByte(p.data[j+1:], '\n')
+					continue
+				}
+
+				return p.newParserError(j, "not a valid identifier")
 			case c == ' ', c == '\t', c == '\r', c == '\n':
 				if bytes.Equal(key, []byte(exportPrefix)) {
 					key = key[:0]
@@ -106,7 +111,8 @@ ParseLoop:
 				state = stateQuoteDouble
 			case '#':
 				if unicode.IsSpace(rune(p.data[j-1])) {
-					break ParseLoop
+					j += bytes.IndexByte(append(p.data[j+1:], '\n'), '\n')
+					continue
 				}
 
 				value = append(value, c)
@@ -225,14 +231,19 @@ func isShellSpecialVar(c uint8) bool {
 	return false
 }
 
-// isNum reports whether the byte is an ASCII letter, number, or underscore
+// isNum reports whether the byte is an ASCII number.
 func isNum(c uint8) bool {
 	return '0' <= c && c <= '9'
 }
 
+// isAlpha reports whether the byte is an ASCII letter.
+func isAlpha(c uint8) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+}
+
 // isAlphaNum reports whether the byte is an ASCII letter, number, or underscore
 func isAlphaNum(c uint8) bool {
-	return isNum(c) || c == '_' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+	return isNum(c) || isAlpha(c) || c == '_'
 }
 
 // resolveParameter resolves the parameter that begins the string and the number of bytes
@@ -249,19 +260,22 @@ func (p *parser) resolveParameter(characterStart int, s []byte, lookupEnv lookup
 	switch {
 	case s[0] == '{':
 		// Scan to closing brace
-		for i := 1; i < len(s); i++ {
-			if s[i] == '}' {
-				if i == 1 {
-					return nil, 2, nil // Bad syntax; eat "${}"
-				}
-				val, err := p.expandParameter(characterStart+1, s[1:i], lookupEnv)
-				return val, i + 1, err
+		i := bytes.IndexByte(s, '}')
+		if i != -1 {
+			if i == 1 {
+				return nil, 2, nil // bad syntax; eat "${}"
 			}
+
+			val, err := p.expandParameter(characterStart+1, s[1:i], lookupEnv)
+			return val, i + 1, err
 		}
-		return nil, 0, p.newParserError(characterStart+1, "unmatched parenthesis for parameter")
+
+		return nil, 0, p.newParserError(characterStart+1, "unexpected EOF while looking for matching '}'")
 	case isShellSpecialVar(s[0]):
-		parameter, err := p.expandParameter(characterStart, s[0:1], lookupEnv)
-		return parameter, 1, err
+		// todo how can we expand these things?
+		// one idea might be to have a special option that allows
+		// one to pass in the relevant arguments and expansion possibilities
+		return []byte(""), 1, nil
 	default:
 		// Scan alphanumerics.
 		var i int
@@ -272,54 +286,62 @@ func (p *parser) resolveParameter(characterStart int, s []byte, lookupEnv lookup
 	}
 }
 
-// todo needs better error messages
+// todo needs better error messages.
 func (p *parser) expandParameter(characterStart int, s []byte, lookupEnv lookupEnvFunc) (value []byte, err error) {
 	var envSet bool
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case ':':
-			if i == len(s) {
-				return nil, p.newParserError(characterStart, "unrecognized modifier")
-			}
 
-			value, envSet = lookupEnv(s[0:i])
-			switch s[i+1] {
-			case '-':
-				if !envSet || len(value) == 0 {
-					return s[i+2:], nil
-				}
+	if len(s) > 0 && isNum(s[0]) {
+		return nil, p.newParserError(characterStart, "invalid identifier")
+	}
 
-				return value, nil
-			case '+':
-				if len(value) > 0 {
-					return s[i+2:], nil
-				}
+	var i int
+	for i = 1; i < len(s) && isAlphaNum(s[i]); i++ {
+	}
 
-				return value, nil
-			default:
-				return nil, p.newParserError(characterStart+i+1, "unrecognized modifier")
-			}
+	value, envSet = lookupEnv(s[:i])
+	if i >= len(s) {
+		// todo error when not set
+		// return nil, p.newUnboundVariable(characterStart, s[:i])
+		return value, nil
+	}
+
+	switch s[i] {
+	case ':':
+		if i == len(s) {
+			return nil, p.newParserError(characterStart+i, "bad substitution: no modifier")
+		}
+
+		switch s[i+1] {
 		case '-':
-			value, envSet = lookupEnv(s[0:i])
-			if !envSet {
-				return s[i+1:], nil
+			if !envSet || len(value) == 0 {
+				return s[i+2:], nil
 			}
 
 			return value, nil
 		case '+':
-			value, envSet = lookupEnv(s[0:i])
-			if envSet {
-				return s[i+1:], nil
+			if len(value) > 0 {
+				return s[i+2:], nil
 			}
 
 			return value, nil
+		default:
+			return nil, p.newParserError(characterStart+i+1, "bad substitution: no modifier")
 		}
-	}
+	case '-':
+		value, envSet = lookupEnv(s[0:i])
+		if !envSet {
+			return s[i+1:], nil
+		}
 
-	value, _ = lookupEnv(s)
-	// if !envSet {
-	// 	return nil, p.newParserError(characterStart, "unbound variable")
-	// }
+		return value, nil
+	case '+':
+		value, envSet = lookupEnv(s[0:i])
+		if envSet {
+			return s[i+1:], nil
+		}
+
+		return value, nil
+	}
 
 	return
 }

@@ -81,10 +81,8 @@ func ParseWithLookup(r io.Reader, lookupEnv lookupEnvFunc) (envMap map[string]st
 func parseWithLookup(d []byte, lookupEnv lookupEnvFunc) (envMap map[string]string, err error) {
 	envMap = make(map[string]string)
 
-	expandEnv := func(s []byte) (value []byte, exists bool) {
-		var val string
-
-		if val, exists = envMap[string(s)]; exists {
+	expandEnv := func(s []byte) ([]byte, bool) {
+		if val, exists := envMap[string(s)]; exists {
 			return []byte(val), exists
 		}
 

@@ -39,10 +39,9 @@ func newParser(d []byte) *parser {
 	}
 }
 
-// func parseLine(lineNumber int, line []byte, lookupEnv lookupEnvFunc) (key []byte, value []byte, err error) {
-func (p *parser) parse(m *map[string]string, lookupEnv lookupEnvFunc) (err error) {
-	key := make([]byte, 0)
-	value := make([]byte, 0)
+func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error) {
+	key := make([]byte, 0, len(p.data))
+	value := make([]byte, 0, len(p.data))
 
 	state := stateKey
 
@@ -99,7 +98,7 @@ func (p *parser) parse(m *map[string]string, lookupEnv lookupEnvFunc) (err error
 			case '\n':
 				p.lineNumber++
 
-				(*m)[string(key)] = string(value)
+				m[string(key)] = string(value)
 				key = key[:0]
 				value = value[:0]
 				state = stateKey
@@ -197,7 +196,7 @@ func (p *parser) parse(m *map[string]string, lookupEnv lookupEnvFunc) (err error
 	}
 
 	if state == stateValue {
-		(*m)[string(key)] = string(value)
+		m[string(key)] = string(value)
 		key = key[:0]
 		// value = value[:0]
 	}
@@ -302,7 +301,7 @@ func (p *parser) expandParameter(characterStart int, s []byte, lookupEnv lookupE
 	if i >= len(s) {
 		// todo error when not set
 		// return nil, p.newUnboundVariable(characterStart, s[:i])
-		return value, nil
+		return
 	}
 
 	switch s[i] {
@@ -314,33 +313,23 @@ func (p *parser) expandParameter(characterStart int, s []byte, lookupEnv lookupE
 		switch s[i+1] {
 		case '-':
 			if !envSet || len(value) == 0 {
-				return s[i+2:], nil
+				value = s[i+2:]
 			}
-
-			return value, nil
 		case '+':
 			if len(value) > 0 {
-				return s[i+2:], nil
+				value = s[i+2:]
 			}
-
-			return value, nil
 		default:
 			return nil, p.newParserError(characterStart+i+1, "bad substitution: no modifier")
 		}
 	case '-':
-		value, envSet = lookupEnv(s[0:i])
 		if !envSet {
-			return s[i+1:], nil
+			value = s[i+1:]
 		}
-
-		return value, nil
 	case '+':
-		value, envSet = lookupEnv(s[0:i])
 		if envSet {
-			return s[i+1:], nil
+			value = s[i+1:]
 		}
-
-		return value, nil
 	}
 
 	return

@@ -479,7 +479,7 @@ func TestParsing(t *testing.T) {
 
 			p := newParser([]byte(tt.rawEnvLine))
 
-			_ = p.parse(&newEnv, expandEnv)
+			_ = p.parse(newEnv, expandEnv)
 			if tt.expectedKey == "" {
 				if !reflect.DeepEqual(tt.env, newEnv) {
 					t.Errorf("Expected '%v' to parse as '%v' => '%v', got %+v", tt.rawEnvLine, tt.expectedKey, tt.expectedValue, newEnv)

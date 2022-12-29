@@ -4,9 +4,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/hoshsadiq/godotenv"
 	"log"
 	"os"
+
+	"github.com/hoshsadiq/godotenv"
 )
 
 func main() {
@@ -19,7 +20,6 @@ func main() {
 
 	flags.Usage = func() {
 		_, _ = fmt.Fprintf(flags.Output(), `Usage:
-  %[1]s options [ command [ arg ... ] ]
   %[1]s [ options ] command [ arg ... ]
 
 Utility to run a process with an env setup from a .env file.

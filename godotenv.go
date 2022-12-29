@@ -91,7 +91,7 @@ func parseWithLookup(d []byte, lookupEnv lookupEnvFunc) (envMap map[string]strin
 
 	parser := newParser(d)
 
-	err = parser.parse(&envMap, expandEnv)
+	err = parser.parse(envMap, expandEnv)
 
 	return envMap, err
 }

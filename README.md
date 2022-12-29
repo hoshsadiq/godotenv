@@ -97,12 +97,6 @@ func main() {
 }
 ```
 
-If you're even lazier than that, you can just take advantage of the autoload package which will read in `.env` on import
-
-```go
-import _ "github.com/hoshsadiq/godotenv/autoload"
-```
-
 While `.env` in the project root is the default, you don't have to be constrained, both examples below are 100% legit
 
 ```go

@@ -31,7 +31,7 @@ jobs:
       - id: go-version
         run: |
           go_version="$(awk '/^go/{print $2}' go.mod)"
-          echo "::set-output name=go_version::${go_version}.x"
+          echo "go_version=${go_version}.x" >> $GITHUB_OUTPUT
 
       - name: Allow arm Docker builds # https://github.com/linuxkit/linuxkit/tree/master/pkg/binfmt
         run: sudo docker run --privileged linuxkit/binfmt:v0.8
@@ -41,7 +41,7 @@ jobs:
         run: |
           echo -e "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --import --batch --no-tty
           printf "%s:6:\n" "${GPG_FINGERPRINT}" | gpg --import-ownertrust
-          echo "::set-output name=fingerprint::$(gpg --with-colons --list-keys | awk -F: '/^pub/ { print $5 }')"
+          echo "fingerprint=$(gpg --with-colons --list-keys | awk -F: '/^pub/ { print $5 }')" >> $GITHUB_OUTPUT
 
       - name: Github Docker login
         run: echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin

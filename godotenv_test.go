@@ -120,6 +120,11 @@ func TestFileLoading(t *testing.T) {
 				t.Fatalf("Error loading %v: %s", tt.envFileName, err)
 			}
 
+			// to avoid conflict between windows and non-windows.
+			for k, v := range envMap {
+				envMap[k] = strings.ReplaceAll(v, "\r", "")
+			}
+
 			if !reflect.DeepEqual(tt.expectedValues, envMap) {
 				t.Errorf("Mismatch env vars: expected '%v' got '%v'", tt.expectedValues, envMap)
 			}

@@ -95,6 +95,13 @@ func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error)
 			}
 		case stateValue:
 			switch c {
+			case '\r':
+				// ignore `\r` in an `\r\n`, but not in only `\r`
+				if len(p.data) >= j+1 && p.data[j+1] == '\n' {
+					continue
+				}
+
+				fallthrough
 			case '\n':
 				p.lineNumber++
 

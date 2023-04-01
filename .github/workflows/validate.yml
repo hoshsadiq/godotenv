@@ -150,4 +150,4 @@ jobs:
         uses: goreleaser/goreleaser-action@v2
         with:
           version: latest
-          args: release --config .goreleaser.yaml --rm-dist --skip-publish --skip-sign --snapshot
+          args: release --config .goreleaser.yaml --clean --skip-publish --skip-sign --snapshot

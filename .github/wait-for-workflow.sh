@@ -14,12 +14,8 @@ check_conclusion() {
   count=0
   status="$(get_run_status)"
   until [[ $status == "completed" ]]; do
-    wait=$((2 ** count))
-    # wait max 15 seconds
-    if (( wait > 15 )); then
-      wait=15
-    fi
-    count=$((count + 1))
+    ((wait=(2 ** count) && wait > 15 ? 15 : wait )) # wait max 15 seconds
+    ((count++))
     if ((count < retries)); then
       printf "Retry $count/$retries run status=%s, checking again in $wait seconds...\n" "$status" >&2
       sleep $wait
@@ -48,11 +44,11 @@ get_run() {
 }
 
 get_run_status() {
-  jq <<<"$(get_run)" -r '.status'
+  get_run | jq -r '.status'
 }
 
 get_run_conclusion() {
-  jq <<<"$(get_run)" -r '.conclusion'
+  get_run | jq -r '.conclusion'
 }
 
 check_conclusion 300

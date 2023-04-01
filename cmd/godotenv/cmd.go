@@ -11,12 +11,13 @@ import (
 )
 
 func main() {
-	var showVersion bool
+	var showVersion, overload bool
 	envFilenames := stringsFlag{".env"}
 
 	flags := flag.NewFlagSet(projectName, flag.ContinueOnError)
 	flags.BoolVar(&showVersion, "v", false, "Show version information.")
 	flags.Var(&envFilenames, "f", "Comma separated paths to .env `files`. Repeat for multiple files.")
+	flags.BoolVar(&overload, "o", false, "Override existing .env variables.")
 
 	flags.Usage = func() {
 		_, _ = fmt.Fprintf(flags.Output(), `Usage:
@@ -31,6 +32,7 @@ Options:
 		_, _ = fmt.Fprintln(flags.Output())
 		_, _ = fmt.Fprintln(flags.Output(), `Example:
 	godotenv -f /path/to/something/.env -f /another/path/.env fortune
+	godotenv -o -f /path/to/something/.env -f /another/path/.env fortune
 	`)
 		_, _ = fmt.Fprintf(flags.Output(), `For more information, see %s`, projectURL)
 		_, _ = fmt.Fprintln(flags.Output())
@@ -55,7 +57,12 @@ Options:
 		os.Exit(1)
 	}
 
-	err = godotenv.Load(envFilenames...)
+	loader := godotenv.Load
+	if overload {
+		loader = godotenv.Overload
+	}
+
+	err = loader(envFilenames...)
 	if err != nil {
 		log.Fatal(err)
 		return

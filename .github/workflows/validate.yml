@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
       - id: go-version-matrix
         run: |
           go_version="$(awk '/^go/{print $2}' go.mod)"
@@ -147,7 +147,7 @@ jobs:
         run: sudo docker run --privileged linuxkit/binfmt:v0.8
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v2
+        uses: goreleaser/goreleaser-action@v4
         with:
           version: latest
           args: release --config .goreleaser.yaml --clean --skip-publish --skip-sign --snapshot

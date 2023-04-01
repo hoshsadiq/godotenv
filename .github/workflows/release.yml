@@ -44,7 +44,7 @@ jobs:
           echo "fingerprint=$(gpg --with-colons --list-keys | awk -F: '/^pub/ { print $5 }')" >> $GITHUB_OUTPUT
 
       - name: Github Docker login
-        run: echo ${{ secrets.GHCR_PAT }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+        run: echo ${{ secrets.GITHUB_TOKEN }} | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Setup go
         run: curl -sL https://raw.githubusercontent.com/maxatome/install-go/v3.3/install-go.pl | perl - ${{ steps.go-version-matrix.outputs.go_version }} $HOME

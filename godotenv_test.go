@@ -1,4 +1,4 @@
-package godotenv
+package godotenv_test
 
 import (
 	"bytes"
@@ -7,6 +7,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/hoshsadiq/godotenv"
 )
 
 func TestFileLoading(t *testing.T) {
@@ -33,8 +35,9 @@ func TestFileLoading(t *testing.T) {
 				"OPTION_SINGLE_D": "\\n",
 				"OPTION_SINGLE_E": `echo "asd"`,
 				"OPTION_SINGLE_F": "echo asd",
-				"OPTION_SINGLE_G": "1\n2",
-				"OPTION_SINGLE_H": "1\n2\n3 is \\'quoted\\'",
+				"OPTION_SINGLE_G": "'escaped'",
+				"OPTION_SINGLE_H": "1\n2",
+				"OPTION_SINGLE_I": "1\n2\n3 is \\'quoted\\'",
 
 				"OPTION_DOUBLE_A": "1",
 				"OPTION_DOUBLE_B": "2",
@@ -42,8 +45,9 @@ func TestFileLoading(t *testing.T) {
 				"OPTION_DOUBLE_D": "\n",
 				"OPTION_DOUBLE_E": "echo 'asd'",
 				"OPTION_DOUBLE_F": "echo asd",
-				"OPTION_DOUBLE_G": "1\n2",
-				"OPTION_DOUBLE_H": "1\n2\n3 is \"quoted\"",
+				"OPTION_DOUBLE_G": "\"escaped\"",
+				"OPTION_DOUBLE_H": "1\n2",
+				"OPTION_DOUBLE_I": "1\n2\n3 is \"quoted\"",
 			},
 		},
 		{
@@ -112,7 +116,7 @@ func TestFileLoading(t *testing.T) {
 			}
 			defer file.Close()
 
-			envMap, err := ParseWithLookup(file, func(name []byte) (value []byte, exists bool) {
+			envMap, err := godotenv.ParseWithLookup(file, func(name []byte) (value []byte, exists bool) {
 				val, exists := tt.presets[string(name)]
 				return []byte(val), exists
 			})
@@ -126,16 +130,33 @@ func TestFileLoading(t *testing.T) {
 			}
 
 			if !reflect.DeepEqual(tt.expectedValues, envMap) {
-				t.Errorf("Mismatch env vars: expected '%v' got '%v'", tt.expectedValues, envMap)
+				t.Errorf("Mismatch env vars")
+				printDiff(t, tt.expectedValues, envMap)
 			}
 		})
+	}
+}
+
+func printDiff(t *testing.T, expected, actual map[string]string) {
+	t.Helper()
+	for i, v := range expected {
+		if actual[i] != v {
+			t.Logf("- %q = %q", i, v)
+			t.Logf("+ %q = %q", i, actual[i])
+		}
+	}
+	for k, v := range actual {
+		if expected[k] != v {
+			t.Logf("- %q = %q", k, v)
+			t.Logf("+ %q = %q", k, expected[k])
+		}
 	}
 }
 
 func TestLoadWithNoArgsLoadsDotEnv(t *testing.T) {
 	t.Parallel()
 
-	err := Load()
+	err := godotenv.Load()
 	pathError := err.(*os.PathError)
 	if pathError == nil || pathError.Op != "open" || pathError.Path != ".env" {
 		t.Errorf("Didn't try and open .env by default")
@@ -145,7 +166,7 @@ func TestLoadWithNoArgsLoadsDotEnv(t *testing.T) {
 func TestOverloadWithNoArgsOverloadsDotEnv(t *testing.T) {
 	t.Parallel()
 
-	err := Overload()
+	err := godotenv.Overload()
 	pathError := err.(*os.PathError)
 	if pathError == nil || pathError.Op != "open" || pathError.Path != ".env" {
 		t.Errorf("Didn't try and open .env by default")
@@ -155,7 +176,7 @@ func TestOverloadWithNoArgsOverloadsDotEnv(t *testing.T) {
 func TestLoadFileNotFound(t *testing.T) {
 	t.Parallel()
 
-	err := Load("somefilethatwillneverexistever.env")
+	err := godotenv.Load("somefilethatwillneverexistever.env")
 	if err == nil {
 		t.Error("File wasn't found but Load didn't return an error")
 	}
@@ -164,7 +185,7 @@ func TestLoadFileNotFound(t *testing.T) {
 func TestOverloadFileNotFound(t *testing.T) {
 	t.Parallel()
 
-	err := Overload("somefilethatwillneverexistever.env")
+	err := godotenv.Overload("somefilethatwillneverexistever.env")
 	if err == nil {
 		t.Error("File wasn't found but Overload didn't return an error")
 	}
@@ -180,7 +201,7 @@ func TestReadPlainEnv(t *testing.T) {
 		"OPTION_C": "",
 	}
 
-	envMap, err := Read(envFileName)
+	envMap, err := godotenv.Read(envFileName)
 	if err != nil {
 		t.Errorf("Error reading file: %s", err)
 	}
@@ -199,7 +220,7 @@ func TestReadPlainEnv(t *testing.T) {
 func TestParse(t *testing.T) {
 	t.Parallel()
 
-	envMap, err := Parse(bytes.NewReader([]byte("ONE=1\nTWO='2'")))
+	envMap, err := godotenv.Parse(bytes.NewReader([]byte("ONE=1\nTWO='2'")))
 	expectedValues := map[string]string{
 		"ONE": "1",
 		"TWO": "2",
@@ -230,7 +251,7 @@ func TestLoadDoesNotOverride(t *testing.T) {
 		_ = os.Setenv(k, v)
 	}
 
-	err := Load(envFileName)
+	err := godotenv.Load(envFileName)
 	if err != nil {
 		t.Fatalf("Error loading %v: %s", envFileName, err)
 	}
@@ -263,7 +284,7 @@ func TestOverloadDoesOverride(t *testing.T) {
 		_ = os.Setenv(k, v)
 	}
 
-	err := Overload(envFileName)
+	err := godotenv.Overload(envFileName)
 	if err != nil {
 		t.Fatalf("Error loading %v: %s", envFileName, err)
 	}
@@ -330,7 +351,7 @@ func TestExpanding(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			env, err := Parse(strings.NewReader(tt.input))
+			env, err := godotenv.Parse(strings.NewReader(tt.input))
 			if err != nil {
 				t.Errorf("Error: %s", err.Error())
 			}
@@ -347,7 +368,7 @@ func TestExpanding(t *testing.T) {
 func TestActualEnvVarsAreLeftAlone(t *testing.T) {
 	os.Clearenv()
 	os.Setenv("OPTION_A", "actualenv")
-	_ = Load("fixtures/plain.env")
+	_ = godotenv.Load("fixtures/plain.env")
 
 	if os.Getenv("OPTION_A") != "actualenv" {
 		t.Error("An ENV var set earlier was overwritten")
@@ -479,12 +500,10 @@ func TestParsing(t *testing.T) {
 					return []byte(val), exists
 				}
 
-				return LookupEnv(s)
+				return []byte(val), false
 			}
 
-			p := newParser([]byte(tt.rawEnvLine))
-
-			_ = p.parse(newEnv, expandEnv)
+			newEnv, _ = godotenv.ParseWithLookup(strings.NewReader(tt.rawEnvLine), expandEnv)
 			if tt.expectedKey == "" {
 				if !reflect.DeepEqual(tt.env, newEnv) {
 					t.Errorf("Expected '%v' to parse as '%v' => '%v', got %+v", tt.rawEnvLine, tt.expectedKey, tt.expectedValue, newEnv)
@@ -506,7 +525,7 @@ func TestErrorReadDirectory(t *testing.T) {
 	t.Parallel()
 
 	envFileName := "fixtures/"
-	envMap, err := Read(envFileName)
+	envMap, err := godotenv.Read(envFileName)
 	if err == nil {
 		t.Errorf("Expected error, got %v: %s", envMap, err)
 	}
@@ -516,7 +535,7 @@ func TestErrorParsing(t *testing.T) {
 	t.Parallel()
 
 	envFileName := "fixtures/invalid1.env"
-	envMap, err := Read(envFileName)
+	envMap, err := godotenv.Read(envFileName)
 	if err == nil {
 		t.Errorf("Expected error, got %v: %s", envMap, err)
 	}
@@ -554,8 +573,8 @@ func TestWrite(t *testing.T) {
 		t.Run(tt.env, func(t *testing.T) {
 			t.Parallel()
 
-			envMap, _ := Unmarshal(tt.env)
-			actual, _ := Marshal(envMap)
+			envMap, _ := godotenv.Unmarshal(tt.env)
+			actual, _ := godotenv.Marshal(envMap)
 			if tt.expected != actual {
 				t.Errorf("Expected '%v' (%v) to write as '%v', got '%v' instead.", tt.env, envMap, tt.expected, actual)
 			}
@@ -568,21 +587,26 @@ func TestRoundTrip(t *testing.T) {
 
 	fixtures := []string{"equals.env", "exported.env", "plain.env", "quoted.env"}
 	for _, fixture := range fixtures {
-		fixtureFilename := fmt.Sprintf("fixtures/%s", fixture)
-		env, err := readFile(fixtureFilename)
-		if err != nil {
-			t.Errorf("Expected '%s' to read without error (%v)", fixtureFilename, err)
-		}
-		rep, err := Marshal(env)
-		if err != nil {
-			t.Errorf("Expected '%s' to Marshal (%v)", fixtureFilename, err)
-		}
-		roundtripped, err := Unmarshal(rep)
-		if err != nil {
-			t.Errorf("Expected '%s' to Mashal and Unmarshal (%v)", fixtureFilename, err)
-		}
-		if !reflect.DeepEqual(env, roundtripped) {
-			t.Errorf("Expected '%s' to roundtrip as '%v', got '%v' instead", fixtureFilename, env, roundtripped)
-		}
+		fixture := fixture
+		t.Run(fixture, func(t *testing.T) {
+			t.Parallel()
+
+			fixtureFilename := fmt.Sprintf("fixtures/%s", fixture)
+			env, err := godotenv.Read(fixtureFilename)
+			if err != nil {
+				t.Errorf("Expected '%s' to read without error (%v)", fixtureFilename, err)
+			}
+			rep, err := godotenv.Marshal(env)
+			if err != nil {
+				t.Errorf("Expected '%s' to Marshal (%v)", fixtureFilename, err)
+			}
+			roundtripped, err := godotenv.Unmarshal(rep)
+			if err != nil {
+				t.Errorf("Expected '%s' to Mashal and Unmarshal (%v)", fixtureFilename, err)
+			}
+			if !reflect.DeepEqual(env, roundtripped) {
+				t.Errorf("Expected '%s' to roundtrip as '%v', got '%v' instead", fixtureFilename, env, roundtripped)
+			}
+		})
 	}
 }

@@ -490,6 +490,10 @@ func TestParsing(t *testing.T) {
 		{rawEnvLine: `FOO=$(echo hi)`, expectedKey: "FOO", expectedValue: "$(echo hi)"},
 		{rawEnvLine: "FOO=`echo hi`", expectedKey: "FOO", expectedValue: "`echo hi`"},
 		{rawEnvLine: `FOO=$(echo $BAR)`, expectedKey: "FOO", expectedValue: "$(echo $BAR)"},
+
+		// backslash-newline is a line continuation
+		{rawEnvLine: "FOO=a\\\nb", expectedKey: "FOO", expectedValue: "ab"},
+		{rawEnvLine: "FOO=\"a\\\nb\"", expectedKey: "FOO", expectedValue: "ab"},
 	}
 
 	t.Parallel()
@@ -574,6 +578,23 @@ func TestReadWhitespaceEnv(t *testing.T) {
 		"KEY_B": "1 2 3",
 		"KEY_C": "bar",
 		"KEY_D": "1 KEY_E=2",
+	}
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("expected %v, got %v", want, got)
+	}
+}
+
+func TestReadLineContinuationEnv(t *testing.T) {
+	t.Parallel()
+
+	got, err := godotenv.Read("fixtures/line_continuation.env")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := map[string]string{
+		"KEY_A": "ab",
+		"KEY_B": "cd",
 	}
 	if !reflect.DeepEqual(want, got) {
 		t.Errorf("expected %v, got %v", want, got)

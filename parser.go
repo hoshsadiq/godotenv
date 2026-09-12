@@ -167,6 +167,12 @@ func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error)
 				value = append(value, c)
 			}
 		case stateEscapeNone:
+			if c == '\n' {
+				p.lineNumber++
+				state = stateValue
+				continue
+			}
+
 			value = append(value, c)
 			state = stateValue
 		case stateQuoteDouble:
@@ -189,6 +195,12 @@ func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error)
 				value = append(value, c)
 			}
 		case stateEscapeDouble:
+			if c == '\n' {
+				p.lineNumber++
+				state = stateQuoteDouble
+				continue
+			}
+
 			// todo how can we combine some of these cases?
 			switch c {
 			case 'b':

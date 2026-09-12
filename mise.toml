@@ -1,0 +1,60 @@
+[tools]
+"github:j178/prek" = "v0.5.1"
+"github:golangci/golangci-lint" = "v2.13.2"
+"github:mvdan/gofumpt" = "v0.11.0"
+"github:goreleaser/goreleaser" = "v2.18.0"
+"github:rhysd/actionlint" = "v1.7.12"
+"github:koalaman/shellcheck" = "v0.11.0"
+"go:golang.org/x/tools/cmd/goimports" = "v0.49.0"
+"npm:renovate" = "44.56.3"
+
+[env]
+GOFLAGS = "-mod=readonly"
+
+[tasks.install]
+description = "Install all pinned tools via mise"
+run = "mise install"
+
+[tasks.test]
+description = "Run tests with race + coverage"
+run = "go test -race -cover ./..."
+
+[tasks."test:verbose"]
+description = "Run tests with verbose output"
+run = "go test -v -race -cover ./..."
+
+[tasks.fmt]
+description = "Format code (gofumpt + goimports)"
+run = ["gofumpt -w .", "goimports -w -local github.com/hoshsadiq/godotenv ."]
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run"
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.check]
+description = "fmt + lint + vet"
+run = ["mise run fmt", "mise run lint", "mise run vet"]
+
+[tasks.precommit]
+description = "Run prek hooks on all files"
+run = "prek run --all-files"
+
+[tasks."precommit:install"]
+description = "Register git hooks via prek"
+run = "prek install --install-hooks"
+
+[tasks.build]
+description = "Build a local snapshot"
+run = "goreleaser build --snapshot --clean"
+
+[tasks."release:dry"]
+description = "Snapshot release (no publish)"
+run = "goreleaser release --snapshot --clean"
+
+[tasks.ci]
+description = "Run checks and tests locally"
+run = ["mise run check", "mise run test"]

@@ -3,6 +3,7 @@ package godotenv
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"unicode"
 )
 
@@ -299,36 +300,27 @@ func isAlphaNum(c uint8) bool {
 	return isNum(c) || isAlpha(c) || c == '_'
 }
 
-// resolveParameter resolves the parameter that begins the string and the number of bytes
-// consumed to extract the name of it. If the name is enclosed in {}, it's part of a ${}
-// expansion and this will be expanded based on a subset of POSIX specification. Namely:
-// ${VAR}				No parameter expansion
-// ${VAR:-STRING}		If VAR is empty or unset, use STRING as its value.
-// ${VAR-STRING}		If VAR is unset, use STRING as its value.
-// ${VAR:+STRING}		If VAR is not empty, use STRING as its value.
-// ${VAR+STRING}		If VAR is set, use STRING as its value.
-// https://steinbaugh.com/posts/posix.html#default-value
-// todo we should combine expandParameter with this function to avoid looping over the parameter twice.
-func (p *parser) resolveParameter(characterStart int, s []byte, lookupEnv lookupEnvFunc) (name []byte, skip int, err error) {
+// resolveParameter resolves the parameter starting at s and reports how many
+// bytes it consumed. It handles $NAME and the ${NAME<op><word>} forms from the
+// POSIX shell parameter expansion rules.
+func (p *parser) resolveParameter(characterStart int, s []byte, lookupEnv lookupEnvFunc) (res []byte, skip int, err error) {
+	if len(s) == 0 {
+		return []byte("$"), 0, nil
+	}
+
 	switch {
 	case s[0] == '{':
-		// Scan to closing brace
-		i := bytes.IndexByte(s, '}')
-		if i != -1 {
-			if i == 1 {
-				return nil, 2, nil // bad syntax; eat "${}"
-			}
-
-			val, err := p.expandParameter(characterStart+1, s[1:i], lookupEnv)
-			return val, i + 1, err
+		end := matchBrace(s)
+		if end < 0 {
+			return nil, 0, p.newParserError(characterStart+1, "unexpected EOF while looking for matching '}'")
 		}
 
-		return nil, 0, p.newParserError(characterStart+1, "unexpected EOF while looking for matching '}'")
-	case isShellSpecialVar(s[0]):
-		// todo how can we expand these things?
-		// one idea might be to have a special option that allows
-		// one to pass in the relevant arguments and expansion possibilities
-		return []byte(""), 1, nil
+		val, err := p.expandBraced(characterStart+1, s[1:end], lookupEnv)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		return val, end + 1, nil
 	case s[0] == '(':
 		// Command substitution is never executed. Preserve `$(...)` verbatim
 		for i := 1; i < len(s) && s[i] != '\n'; i++ {
@@ -337,63 +329,157 @@ func (p *parser) resolveParameter(characterStart int, s []byte, lookupEnv lookup
 			}
 		}
 		return []byte("$"), 0, nil
+	case isShellSpecialVar(s[0]):
+		return []byte(""), 1, nil
 	default:
-		// Scan alphanumerics.
 		var i int
-		for i = 0; i < len(s) && isAlphaNum(s[i]); i++ {
+		if isAlpha(s[0]) || s[0] == '_' {
+			for i = 1; i < len(s) && isAlphaNum(s[i]); i++ {
+			}
 		}
-		parameter, err := p.expandParameter(characterStart, s[:i], lookupEnv)
-		return parameter, i, err
+		if i == 0 {
+			return []byte("$"), 0, nil
+		}
+
+		value, envSet := lookupEnv(s[:i])
+		if !envSet && p.cfg.unboundErr {
+			return nil, 0, p.newUnboundVariable(characterStart, string(s[:i]))
+		}
+
+		return value, i, nil
 	}
 }
 
-// todo needs better error messages.
-func (p *parser) expandParameter(characterStart int, s []byte, lookupEnv lookupEnvFunc) (value []byte, err error) {
-	var envSet bool
+// matchBrace returns the index of the '}' closing the '{' at s[0], or -1 if the
+// brace is never closed. Nested `${...}` are taken into account.
+func matchBrace(s []byte) int {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
 
-	if len(s) > 0 && isNum(s[0]) {
-		return nil, p.newParserError(characterStart, "invalid identifier")
+func (p *parser) expandBraced(characterStart int, inner []byte, lookupEnv lookupEnvFunc) (value []byte, err error) {
+	if len(inner) == 0 {
+		return nil, p.newParserError(characterStart, "bad substitution: empty")
+	}
+
+	if inner[0] == '#' && len(inner) > 1 {
+		v, _ := lookupEnv(inner[1:])
+		return []byte(strconv.Itoa(len(v))), nil
 	}
 
 	var i int
-	for i = 1; i < len(s) && isAlphaNum(s[i]); i++ {
-	}
-
-	value, envSet = lookupEnv(s[:i])
-	if i >= len(s) {
-		if !envSet && p.cfg.unboundErr {
-			return nil, p.newUnboundVariable(characterStart, string(s[:i]))
+	if isAlpha(inner[0]) || inner[0] == '_' {
+		for i = 1; i < len(inner) && isAlphaNum(inner[i]); i++ {
 		}
-		return
+	}
+	if i == 0 {
+		return nil, p.newParserError(characterStart, "bad substitution")
 	}
 
-	switch s[i] {
+	name := inner[:i]
+	value, envSet := lookupEnv(name)
+	rest := inner[i:]
+
+	if len(rest) == 0 {
+		if !envSet && p.cfg.unboundErr {
+			return nil, p.newUnboundVariable(characterStart, string(name))
+		}
+		return value, nil
+	}
+
+	switch rest[0] {
 	case ':':
-		if i == len(s) {
+		if len(rest) == 1 {
 			return nil, p.newParserError(characterStart+i, "bad substitution: no modifier")
 		}
 
-		switch s[i+1] {
+		switch rest[1] {
 		case '-':
 			if !envSet || len(value) == 0 {
-				value = s[i+2:]
+				return p.expandWord(characterStart+i+2, rest[2:], lookupEnv)
 			}
+			return value, nil
 		case '+':
 			if len(value) > 0 {
-				value = s[i+2:]
+				return p.expandWord(characterStart+i+2, rest[2:], lookupEnv)
 			}
+			return nil, nil
+		case '?':
+			if !envSet || len(value) == 0 {
+				return nil, p.newParameterError(characterStart, name, i+2, rest[2:], lookupEnv)
+			}
+			return value, nil
+		case '=':
+			return nil, p.newParserError(characterStart+i, "bad substitution: assignment is not supported")
 		default:
-			return nil, p.newParserError(characterStart+i+1, "bad substitution: no modifier")
+			return nil, p.newParserError(characterStart+i, "bad substitution: unsupported operator")
 		}
 	case '-':
 		if !envSet {
-			value = s[i+1:]
+			return p.expandWord(characterStart+i+1, rest[1:], lookupEnv)
 		}
+		return value, nil
 	case '+':
 		if envSet {
-			value = s[i+1:]
+			return p.expandWord(characterStart+i+1, rest[1:], lookupEnv)
+		}
+		return nil, nil
+	case '?':
+		if !envSet {
+			return nil, p.newParameterError(characterStart, name, i+1, rest[1:], lookupEnv)
+		}
+		return value, nil
+	case '=':
+		return nil, p.newParserError(characterStart+i, "bad substitution: assignment is not supported")
+	default:
+		return nil, p.newParserError(characterStart+i, "bad substitution: unsupported operator")
+	}
+}
+
+// expandWord re-scans the word of a parameter expansion for nested $ expansions.
+func (p *parser) expandWord(characterStart int, w []byte, lookupEnv lookupEnvFunc) ([]byte, error) {
+	out := make([]byte, 0, len(w))
+	for j := 0; j < len(w); j++ {
+		switch w[j] {
+		case '\\':
+			if j+1 < len(w) {
+				j++
+				out = append(out, w[j])
+			}
+		case '$':
+			res, skip, err := p.resolveParameter(characterStart+j, w[j+1:], lookupEnv)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, res...)
+			j += skip
+		default:
+			out = append(out, w[j])
 		}
 	}
+	return out, nil
+}
 
-	return
+func (p *parser) newParameterError(characterStart int, name []byte, wordOffset int, word []byte, lookupEnv lookupEnvFunc) error {
+	msg, err := p.expandWord(characterStart+wordOffset, word, lookupEnv)
+	if err != nil {
+		return err
+	}
+	if len(msg) == 0 {
+		return p.newParserError(characterStart, fmt.Sprintf("%s: parameter not set", name))
+	}
+	return p.newParserError(characterStart, fmt.Sprintf("%s: %s", name, msg))
 }

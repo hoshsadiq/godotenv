@@ -657,6 +657,52 @@ func TestNewDefaultsMatchPackageFuncs(t *testing.T) {
 	}
 }
 
+func TestParameterExpansion(t *testing.T) {
+	const unset = "GODOTENV_PE_UNSET"
+	_ = os.Unsetenv(unset)
+
+	tests := []struct {
+		name    string
+		input   string
+		want    map[string]string
+		wantErr bool
+	}{
+		{"length", "GODOTENV_PE_A=hello\nFOO=${#GODOTENV_PE_A}", map[string]string{"GODOTENV_PE_A": "hello", "FOO": "5"}, false},
+		{"length of empty", "GODOTENV_PE_A=\nFOO=${#GODOTENV_PE_A}", map[string]string{"GODOTENV_PE_A": "", "FOO": "0"}, false},
+		{"default recursive", "GODOTENV_PE_B=bla\nFOO=${" + unset + ":-$GODOTENV_PE_B}", map[string]string{"GODOTENV_PE_B": "bla", "FOO": "bla"}, false},
+		{"default nested", "GODOTENV_PE_B=bla\nFOO=${" + unset + ":-${GODOTENV_PE_B}}", map[string]string{"GODOTENV_PE_B": "bla", "FOO": "bla"}, false},
+		{"alt recursive", "GODOTENV_PE_A=1\nFOO=${GODOTENV_PE_A:+${GODOTENV_PE_A}x}", map[string]string{"GODOTENV_PE_A": "1", "FOO": "1x"}, false},
+		{"default with spaces", "FOO=${" + unset + ":-a b}", map[string]string{"FOO": "a b"}, false},
+		{"error op with value", "GODOTENV_PE_A=x\nFOO=${GODOTENV_PE_A:?boom}", map[string]string{"GODOTENV_PE_A": "x", "FOO": "x"}, false},
+		{"error op unset", "FOO=${" + unset + ":?boom}", nil, true},
+		{"error op empty", "GODOTENV_PE_A=\nFOO=${GODOTENV_PE_A:?boom}", nil, true},
+		{"qmark op unset", "FOO=${" + unset + "?boom}", nil, true},
+		{"qmark op empty is set", "GODOTENV_PE_A=\nFOO=${GODOTENV_PE_A?boom}", map[string]string{"GODOTENV_PE_A": "", "FOO": ""}, false},
+		{"empty braces", "FOO=${}", nil, true},
+		{"assign op unsupported colon", "FOO=${" + unset + ":=x}", nil, true},
+		{"assign op unsupported", "FOO=${" + unset + "=x}", nil, true},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := godotenv.Unmarshal(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(tt.want, got) {
+				t.Errorf("expected %v, got %v", tt.want, got)
+			}
+		})
+	}
+}
+
 func TestErrorReadDirectory(t *testing.T) {
 	t.Parallel()
 

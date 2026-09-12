@@ -425,7 +425,7 @@ func (p *parser) expandBraced(characterStart int, inner []byte, lookupEnv lookup
 		case '=':
 			return nil, p.newParserError(characterStart+i, "bad substitution: assignment is not supported")
 		default:
-			return nil, p.newParserError(characterStart+i, "bad substitution: unsupported operator")
+			return p.substring(characterStart+i, value, rest[1:])
 		}
 	case '-':
 		if !envSet {
@@ -444,6 +444,12 @@ func (p *parser) expandBraced(characterStart int, inner []byte, lookupEnv lookup
 		return value, nil
 	case '=':
 		return nil, p.newParserError(characterStart+i, "bad substitution: assignment is not supported")
+	case '#':
+		return p.stripPrefix(value, rest)
+	case '%':
+		return p.stripSuffix(value, rest)
+	case '/':
+		return p.replace(characterStart+i, value, rest, lookupEnv)
 	default:
 		return nil, p.newParserError(characterStart+i, "bad substitution: unsupported operator")
 	}
@@ -482,4 +488,311 @@ func (p *parser) newParameterError(characterStart int, name []byte, wordOffset i
 		return p.newParserError(characterStart, fmt.Sprintf("%s: parameter not set", name))
 	}
 	return p.newParserError(characterStart, fmt.Sprintf("%s: %s", name, msg))
+}
+
+func (p *parser) stripPrefix(value, rest []byte) ([]byte, error) {
+	pattern := rest[1:]
+	longest := false
+	if len(pattern) > 0 && pattern[0] == '#' {
+		longest = true
+		pattern = pattern[1:]
+	}
+
+	if longest {
+		for k := len(value); k >= 0; k-- {
+			if matchGlob(pattern, value[:k]) {
+				return value[k:], nil
+			}
+		}
+	} else {
+		for k := 0; k <= len(value); k++ {
+			if matchGlob(pattern, value[:k]) {
+				return value[k:], nil
+			}
+		}
+	}
+
+	return value, nil
+}
+
+func (p *parser) stripSuffix(value, rest []byte) ([]byte, error) {
+	pattern := rest[1:]
+	longest := false
+	if len(pattern) > 0 && pattern[0] == '%' {
+		longest = true
+		pattern = pattern[1:]
+	}
+
+	if longest {
+		for k := len(value); k >= 0; k-- {
+			if matchGlob(pattern, value[len(value)-k:]) {
+				return value[:len(value)-k], nil
+			}
+		}
+	} else {
+		for k := 0; k <= len(value); k++ {
+			if matchGlob(pattern, value[len(value)-k:]) {
+				return value[:len(value)-k], nil
+			}
+		}
+	}
+
+	return value, nil
+}
+
+func (p *parser) replace(characterStart int, value, rest []byte, lookupEnv lookupEnvFunc) ([]byte, error) {
+	spec := rest[1:]
+	all := false
+	if len(spec) > 0 && spec[0] == '/' {
+		all = true
+		spec = spec[1:]
+	}
+
+	var anchor byte
+	if len(spec) > 0 && (spec[0] == '#' || spec[0] == '%') {
+		anchor = spec[0]
+		spec = spec[1:]
+	}
+
+	pattern, replacement := splitReplacement(spec)
+
+	replacement, err := p.expandWord(characterStart, replacement, lookupEnv)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]byte, 0, len(value))
+	offset := 0
+	for offset <= len(value) {
+		start, end, ok := findMatch(pattern, value[offset:], anchor)
+		if !ok {
+			break
+		}
+
+		out = append(out, value[offset:offset+start]...)
+		out = append(out, replacement...)
+		offset += end
+
+		if !all {
+			break
+		}
+		if end == start {
+			if offset < len(value) {
+				out = append(out, value[offset])
+				offset++
+			} else {
+				break
+			}
+		}
+	}
+	out = append(out, value[offset:]...)
+
+	return out, nil
+}
+
+func (p *parser) substring(characterStart int, value, spec []byte) ([]byte, error) {
+	offset, rest, ok := parseIndex(spec)
+	if !ok {
+		return nil, p.newParserError(characterStart, "bad substitution: invalid substring")
+	}
+
+	length := len(value)
+	begin := offset
+	if begin < 0 {
+		begin = length + begin
+		if begin < 0 {
+			return nil, nil
+		}
+	}
+	if begin > length {
+		return nil, nil
+	}
+
+	rest = bytes.TrimLeft(rest, " ")
+	if len(rest) == 0 {
+		return value[begin:], nil
+	}
+	if rest[0] != ':' {
+		return nil, p.newParserError(characterStart, "bad substitution: invalid substring")
+	}
+
+	end, _, ok := parseIndex(rest[1:])
+	if !ok {
+		return nil, p.newParserError(characterStart, "bad substitution: invalid substring length")
+	}
+	if end >= 0 {
+		end += begin
+		if end > length {
+			end = length
+		}
+	} else {
+		end += length
+		if end < begin {
+			end = begin
+		}
+	}
+
+	return value[begin:end], nil
+}
+
+func parseIndex(spec []byte) (value int, rest []byte, ok bool) {
+	i := 0
+	for i < len(spec) && spec[i] == ' ' {
+		i++
+	}
+
+	negative := false
+	if i < len(spec) && (spec[i] == '-' || spec[i] == '+') {
+		negative = spec[i] == '-'
+		i++
+	}
+
+	j := i
+	for j < len(spec) && isNum(spec[j]) {
+		j++
+	}
+	if j == i {
+		return 0, nil, false
+	}
+
+	n := 0
+	for k := i; k < j; k++ {
+		n = n*10 + int(spec[k]-'0')
+	}
+	if negative {
+		n = -n
+	}
+
+	return n, spec[j:], true
+}
+
+func splitReplacement(spec []byte) (pattern, replacement []byte) {
+	for i := 0; i < len(spec); i++ {
+		if spec[i] == '\\' {
+			i++
+			continue
+		}
+		if spec[i] == '/' {
+			return spec[:i], spec[i+1:]
+		}
+	}
+	return spec, nil
+}
+
+func findMatch(pattern, str []byte, anchor byte) (start, end int, ok bool) {
+	switch anchor {
+	case '#':
+		for e := len(str); e >= 0; e-- {
+			if matchGlob(pattern, str[:e]) {
+				return 0, e, true
+			}
+		}
+	case '%':
+		for e := len(str); e >= 0; e-- {
+			if matchGlob(pattern, str[len(str)-e:]) {
+				return len(str) - e, len(str), true
+			}
+		}
+	default:
+		for s := 0; s <= len(str); s++ {
+			for e := len(str); e >= s; e-- {
+				if matchGlob(pattern, str[s:e]) {
+					return s, e, true
+				}
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+// matchGlob reports whether the shell glob pattern matches s. It supports `*`,
+// `?`, character classes (`[...]`, `[!...]`/`[^...]`) and `\` escapes.
+func matchGlob(pattern, s []byte) bool {
+	pi, si := 0, 0
+	star := -1
+	starS := 0
+
+	for si < len(s) {
+		switch {
+		case pi < len(pattern) && pattern[pi] == '\\' && pi+1 < len(pattern):
+			if pattern[pi+1] != s[si] {
+				if star < 0 {
+					return false
+				}
+				pi = star + 1
+				starS++
+				si = starS
+				continue
+			}
+			pi += 2
+			si++
+		case pi < len(pattern) && pattern[pi] == '*':
+			star = pi
+			starS = si
+			pi++
+		case pi < len(pattern) && pattern[pi] == '?':
+			pi++
+			si++
+		case pi < len(pattern) && pattern[pi] == '[':
+			next, matched := matchClass(pattern, pi, s[si])
+			if matched {
+				pi = next
+				si++
+			} else if star >= 0 {
+				pi = star + 1
+				starS++
+				si = starS
+			} else {
+				return false
+			}
+		case pi < len(pattern) && pattern[pi] == s[si]:
+			pi++
+			si++
+		default:
+			if star < 0 {
+				return false
+			}
+			pi = star + 1
+			starS++
+			si = starS
+		}
+	}
+
+	for pi < len(pattern) && pattern[pi] == '*' {
+		pi++
+	}
+
+	return pi == len(pattern)
+}
+
+func matchClass(pattern []byte, start int, c byte) (int, bool) {
+	i := start + 1
+	negate := false
+	if i < len(pattern) && (pattern[i] == '^' || pattern[i] == '!') {
+		negate = true
+		i++
+	}
+
+	matched := false
+	first := true
+	for i < len(pattern) && (pattern[i] != ']' || first) {
+		first = false
+		if i+2 < len(pattern) && pattern[i+1] == '-' && pattern[i+2] != ']' {
+			if pattern[i] <= c && c <= pattern[i+2] {
+				matched = true
+			}
+			i += 3
+			continue
+		}
+		if pattern[i] == c {
+			matched = true
+		}
+		i++
+	}
+
+	if i >= len(pattern) {
+		return len(pattern), false
+	}
+
+	return i + 1, matched != negate
 }

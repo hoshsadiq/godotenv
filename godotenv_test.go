@@ -703,6 +703,57 @@ func TestParameterExpansion(t *testing.T) {
 	}
 }
 
+func TestParameterPatternsAndSubstrings(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"strip prefix shortest", "A=hello\nFOO=${A#he}", "llo"},
+		{"strip prefix longest", "A=hello\nFOO=${A##*l}", "o"},
+		{"strip suffix shortest", "A=hello\nFOO=${A%lo}", "hel"},
+		{"strip suffix longest", "A=hello\nFOO=${A%%l*}", "he"},
+		{"strip no match", "A=hello\nFOO=${A#zzz}", "hello"},
+		{"strip star shortest", "A=hello\nFOO=${A#*}", "hello"},
+		{"strip star longest", "A=hello\nFOO=${A##*}", ""},
+		{"strip one char", "A=hello\nFOO=${A#?}", "ello"},
+		{"strip class", "A=hello\nFOO=${A#[a-z]}", "ello"},
+		{"replace first", "A=hello\nFOO=${A/l/L}", "heLlo"},
+		{"replace all", "A=hello\nFOO=${A//l/L}", "heLLo"},
+		{"replace remove", "A=hello\nFOO=${A/l/}", "helo"},
+		{"replace anchored start", "A=hello\nFOO=${A/#he/X}", "Xllo"},
+		{"replace anchored end", "A=hello\nFOO=${A/%lo/X}", "helX"},
+		{"path strip shortest", "A=a/b/c\nFOO=${A#*/}", "b/c"},
+		{"path strip longest", "A=a/b/c\nFOO=${A##*/}", "c"},
+		{"path suffix shortest", "A=a/b/c\nFOO=${A%/*}", "a/b"},
+		{"path suffix longest", "A=a/b/c\nFOO=${A%%/*}", "a"},
+		{"replace dot first", "A=a.b.c\nFOO=${A/./-}", "a-b.c"},
+		{"replace dot all", "A=a.b.c\nFOO=${A//./-}", "a-b-c"},
+		{"substring offset", "A=hello\nFOO=${A:1}", "ello"},
+		{"substring offset len", "A=hello\nFOO=${A:1:3}", "ell"},
+		{"substring negative", "A=hello\nFOO=${A: -2}", "lo"},
+		{"substring negative len", "A=hello\nFOO=${A: -4:2}", "el"},
+		{"substring negative end", "A=hello\nFOO=${A:2:-1}", "ll"},
+		{"substring out of range", "A=hello\nFOO=${A:99}", ""},
+		{"substring far negative", "A=hello\nFOO=${A: -99}", ""},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q (map %v)", tt.want, got["FOO"], got)
+			}
+		})
+	}
+}
+
 func TestErrorReadDirectory(t *testing.T) {
 	t.Parallel()
 

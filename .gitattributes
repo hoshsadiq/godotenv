@@ -1,0 +1,32 @@
+* text=auto eol=lf
+
+# Go
+*.go text eol=lf
+go.sum text eol=lf
+go.mod text eol=lf
+
+# Config files
+*.yml text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.env text eol=lf
+
+# Scripts
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Docs
+*.md text eol=lf
+
+# Binaries
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+
+# Generated files (excluded from language stats)
+dist/** linguist-generated=true
+coverage.* linguist-generated=true

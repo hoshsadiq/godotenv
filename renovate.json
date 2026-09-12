@@ -1,0 +1,68 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":dependencyDashboard",
+    ":maintainLockFilesWeekly",
+    ":prImmediately",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "UTC",
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies", "renovate"],
+  "prConcurrentLimit": 5,
+  "prHourlyLimit": 2,
+  "rangeStrategy": "pin",
+  "postUpdateOptions": ["gomodTidy", "gomodUpdateImportPaths"],
+  "packageRules": [
+    {
+      "matchManagers": ["gomod"],
+      "groupName": "go modules (all)",
+      "groupSlug": "gomod"
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions (all)",
+      "groupSlug": "gha",
+      "pinDigests": true
+    },
+    {
+      "matchManagers": ["dockerfile"],
+      "groupName": "docker base images"
+    },
+    {
+      "matchManagers": ["mise"],
+      "groupName": "mise tools (all)",
+      "groupSlug": "mise"
+    },
+    {
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["golang", "alpine", "debian", "ubuntu", "distroless"],
+      "groupName": "base images"
+    },
+    {
+      "matchUpdateTypes": ["patch"],
+      "groupName": "all patch updates",
+      "groupSlug": "patch",
+      "automerge": true,
+      "matchPackageNames": ["*"]
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security", "renovate"]
+  },
+  "osvVulnerabilityAlerts": true,
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
+      "matchStrings": [
+        "uses:\\s+(?<depName>[^@\\s]+)@(?<currentValue>v[\\d.]+)\\s*#\\s*(?<currentDigest>[a-f0-9]{40})"
+      ],
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "semver"
+    }
+  ]
+}

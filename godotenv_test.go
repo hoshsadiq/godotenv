@@ -521,6 +521,36 @@ func TestParsing(t *testing.T) {
 	}
 }
 
+func TestCommentFirstLineAndEOF(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  map[string]string
+	}{
+		{"leading comment", "# leading comment\nFOO=1\n", map[string]string{"FOO": "1"}},
+		{"leading comment without newline", "# only a comment", map[string]string{}},
+		{"comment at EOF without newline", "FOO=1\n# trailing comment", map[string]string{"FOO": "1"}},
+		{"comment between values", "FOO=1\n# comment\nBAR=2\n", map[string]string{"FOO": "1", "BAR": "2"}},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.Parse(strings.NewReader(tt.input))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(tt.want, got) {
+				t.Errorf("expected %v, got %v", tt.want, got)
+			}
+		})
+	}
+}
+
 func TestErrorReadDirectory(t *testing.T) {
 	t.Parallel()
 

@@ -60,8 +60,14 @@ func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error)
 
 				state = stateValue
 			case c == '#':
-				if unicode.IsSpace(rune(p.data[j-1])) {
-					j += bytes.IndexByte(p.data[j+1:], '\n')
+				if j == 0 || unicode.IsSpace(rune(p.data[j-1])) {
+					nl := bytes.IndexByte(p.data[j+1:], '\n')
+					if nl < 0 {
+						j = len(p.data)
+						continue
+					}
+
+					j += nl
 					continue
 				}
 
@@ -117,7 +123,13 @@ func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error)
 				state = stateQuoteDouble
 			case '#':
 				if unicode.IsSpace(rune(p.data[j-1])) {
-					j += bytes.IndexByte(append(p.data[j+1:], '\n'), '\n')
+					nl := bytes.IndexByte(p.data[j+1:], '\n')
+					if nl < 0 {
+						j = len(p.data)
+						continue
+					}
+
+					j += nl
 					continue
 				}
 

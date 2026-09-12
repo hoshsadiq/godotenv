@@ -42,6 +42,7 @@ func newParser(d []byte) *parser {
 func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error) {
 	key := make([]byte, 0, len(p.data))
 	value := make([]byte, 0, len(p.data))
+	pendingWS := make([]byte, 0, len(p.data))
 
 	state := stateKey
 
@@ -114,12 +115,19 @@ func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error)
 				m[string(key)] = string(value)
 				key = key[:0]
 				value = value[:0]
+				pendingWS = pendingWS[:0]
 				state = stateKey
 			case '\\':
+				value = flushPendingWS(value, pendingWS)
+				pendingWS = pendingWS[:0]
 				state = stateEscapeNone
 			case '\'':
+				value = flushPendingWS(value, pendingWS)
+				pendingWS = pendingWS[:0]
 				state = stateQuoteSingle
 			case '"':
+				value = flushPendingWS(value, pendingWS)
+				pendingWS = pendingWS[:0]
 				state = stateQuoteDouble
 			case '#':
 				if unicode.IsSpace(rune(p.data[j-1])) {
@@ -135,21 +143,27 @@ func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error)
 
 				value = append(value, c)
 			case '$':
+				value = flushPendingWS(value, pendingWS)
+				pendingWS = pendingWS[:0]
 				res, w, err := p.resolveParameter(j, p.data[j+1:], lookupEnv)
 				if err != nil {
 					return err
 				}
 				value = append(value, res...)
 				j += w
-			case ' ':
+			case ' ', '\t':
 				if len(value) == 0 {
 					return p.newParserError(j, "unexpected space in value")
 				}
+
+				pendingWS = append(pendingWS, c)
 			default:
 				if c < 32 {
 					return p.newInvalidCharacterError(j, c)
 				}
 
+				value = flushPendingWS(value, pendingWS)
+				pendingWS = pendingWS[:0]
 				value = append(value, c)
 			}
 		case stateEscapeNone:
@@ -237,6 +251,13 @@ func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error)
 	}
 
 	return nil
+}
+
+func flushPendingWS(value, pending []byte) []byte {
+	if len(pending) == 0 {
+		return value
+	}
+	return append(value, pending...)
 }
 
 // isShellSpecialVar reports whether the character identifies a special

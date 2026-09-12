@@ -480,6 +480,11 @@ func TestParsing(t *testing.T) {
 		// Hashes are comments if it's directly followed by whitespace
 		{rawEnvLine: `FOO=asd#asd`, expectedKey: "FOO", expectedValue: "asd#asd"},
 		{rawEnvLine: `FOO=asd #asd`, expectedKey: "FOO", expectedValue: "asd"},
+
+		// unquoted whitespace is preserved, not concatenated
+		{rawEnvLine: "FOO=a b c", expectedKey: "FOO", expectedValue: "a b c"},
+		{rawEnvLine: "FOO=a  b", expectedKey: "FOO", expectedValue: "a  b"},
+		{rawEnvLine: "FOO=a\tb", expectedKey: "FOO", expectedValue: "a\tb"},
 	}
 
 	t.Parallel()
@@ -548,6 +553,25 @@ func TestCommentFirstLineAndEOF(t *testing.T) {
 				t.Errorf("expected %v, got %v", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestReadWhitespaceEnv(t *testing.T) {
+	t.Parallel()
+
+	got, err := godotenv.Read("fixtures/whitespace.env")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := map[string]string{
+		"KEY_A": "a b c",
+		"KEY_B": "1 2 3",
+		"KEY_C": "bar",
+		"KEY_D": "1 KEY_E=2",
+	}
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("expected %v, got %v", want, got)
 	}
 }
 

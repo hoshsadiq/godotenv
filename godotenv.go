@@ -20,6 +20,62 @@ import (
 	"strings"
 )
 
+// Option configures a Loader created with New.
+type Option func(*config)
+
+type config struct {
+	unboundErr bool
+}
+
+// WithUnboundError makes an unset variable reference ($VAR or ${VAR}) return an
+// error instead of expanding to an empty string.
+func WithUnboundError() Option {
+	return func(c *config) {
+		c.unboundErr = true
+	}
+}
+
+// Loader loads and parses .env content using the options passed to New.
+type Loader struct {
+	cfg config
+}
+
+// New returns a Loader configured with the given options.
+func New(opts ...Option) *Loader {
+	l := &Loader{}
+	for _, opt := range opts {
+		opt(&l.cfg)
+	}
+	return l
+}
+
+// Load reads the given files and sets unset variables in the process
+// environment.
+func (l *Loader) Load(filenames ...string) error {
+	return loadFile(l.cfg, filenames, false)
+}
+
+// Overload reads the given files and overrides variables already set in the
+// process environment.
+func (l *Loader) Overload(filenames ...string) error {
+	return loadFile(l.cfg, filenames, true)
+}
+
+// Read returns the variables from the given files as a map.
+func (l *Loader) Read(filenames ...string) (map[string]string, error) {
+	return readFiles(l.cfg, filenames)
+}
+
+// Parse reads env content from r and returns the variables as a map.
+func (l *Loader) Parse(r io.Reader) (map[string]string, error) {
+	return parseConfig(r, l.cfg, LookupEnv)
+}
+
+// Unmarshal parses env content from a string and returns the variables as a map.
+func (l *Loader) Unmarshal(str string) (map[string]string, error) {
+	return l.Parse(strings.NewReader(str))
+}
+
 // Load will read your env file(s) and load them into ENV for this process.
 // Call this function as close as possible to the start of your program (ideally in main)
 // If you call Load without any args it will default to loading .env in the current path
@@ -29,7 +85,7 @@ import (
 //
 // It's important to note that it WILL NOT OVERRIDE an env variable that already exists - consider the .env file to set dev vars or sensible defaults
 func Load(filenames ...string) (err error) {
-	return loadFile(filenames, false)
+	return loadFile(config{}, filenames, false)
 }
 
 // Overload will read your env file(s) and load them into ENV for this process.
@@ -41,44 +97,32 @@ func Load(filenames ...string) (err error) {
 //
 // It's important to note this WILL OVERRIDE an env variable that already exists - consider the .env file to forcefilly set all vars.
 func Overload(filenames ...string) (err error) {
-	return loadFile(filenames, true)
+	return loadFile(config{}, filenames, true)
 }
 
 // Read all env (with same file loading semantics as Load) but return values as
 // a map rather than automatically writing values into env
 func Read(filenames ...string) (envMap map[string]string, err error) {
-	filenames = filenamesOrDefault(filenames)
-	envMap = make(map[string]string)
-
-	for _, filename := range filenames {
-		individualEnvMap, individualErr := readFile(filename)
-
-		if individualErr != nil {
-			err = individualErr
-			return // return early on a spazout
-		}
-
-		for key, value := range individualEnvMap {
-			envMap[key] = value
-		}
-	}
-
-	return
+	return readFiles(config{}, filenames)
 }
 
 // ParseWithLookup reads an env file from io.Reader, returning a map of keys and values.
 // It uses the lookupEnv to retrieve environment variables. Parse calls this function with
 // LookupEnv as the lookupEnv argument.
 func ParseWithLookup(r io.Reader, lookupEnv lookupEnvFunc) (envMap map[string]string, err error) {
+	return parseConfig(r, config{}, lookupEnv)
+}
+
+func parseConfig(r io.Reader, cfg config, lookupEnv lookupEnvFunc) (envMap map[string]string, err error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
 
-	return parseWithLookup(data, lookupEnv)
+	return parseWithLookup(data, cfg, lookupEnv)
 }
 
-func parseWithLookup(d []byte, lookupEnv lookupEnvFunc) (envMap map[string]string, err error) {
+func parseWithLookup(d []byte, cfg config, lookupEnv lookupEnvFunc) (envMap map[string]string, err error) {
 	envMap = make(map[string]string)
 
 	expandEnv := func(s []byte) ([]byte, bool) {
@@ -89,7 +133,7 @@ func parseWithLookup(d []byte, lookupEnv lookupEnvFunc) (envMap map[string]strin
 		return lookupEnv(s)
 	}
 
-	parser := newParser(d)
+	parser := newParser(d, cfg)
 
 	err = parser.parse(envMap, expandEnv)
 
@@ -151,7 +195,7 @@ func filenamesOrDefault(filenames []string) []string {
 	return filenames
 }
 
-func loadFile(filenames []string, overload bool) error {
+func loadFile(cfg config, filenames []string, overload bool) error {
 	filenames = filenamesOrDefault(filenames)
 
 	currentEnv := map[string]bool{}
@@ -161,7 +205,7 @@ func loadFile(filenames []string, overload bool) error {
 	}
 
 	for _, filename := range filenames {
-		envMap, err := readFile(filename)
+		envMap, err := readFile(cfg, filename)
 		if err != nil {
 			return err
 		}
@@ -176,12 +220,31 @@ func loadFile(filenames []string, overload bool) error {
 	return nil
 }
 
-func readFile(filename string) (envMap map[string]string, err error) {
+func readFiles(cfg config, filenames []string) (envMap map[string]string, err error) {
+	filenames = filenamesOrDefault(filenames)
+	envMap = make(map[string]string)
+
+	for _, filename := range filenames {
+		individualEnvMap, individualErr := readFile(cfg, filename)
+		if individualErr != nil {
+			err = individualErr
+			return // return early on a spazout
+		}
+
+		for key, value := range individualEnvMap {
+			envMap[key] = value
+		}
+	}
+
+	return
+}
+
+func readFile(cfg config, filename string) (envMap map[string]string, err error) {
 	file, err := os.Open(filename)
 	if err != nil {
 		return
 	}
 	defer file.Close()
 
-	return Parse(file)
+	return parseConfig(file, cfg, LookupEnv)
 }

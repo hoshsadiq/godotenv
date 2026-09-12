@@ -29,13 +29,11 @@ func (p *parser) newParserError(characterNumber int, message string) parserError
 	}
 }
 
-// nolint: unused
 type unboundVariableError struct {
 	parserError
 	variableName string
 }
 
-// nolint: unused
 func (p *parser) newUnboundVariable(characterNumber int, variableName string) unboundVariableError {
 	return unboundVariableError{
 		parserError:  p.newParserError(characterNumber, fmt.Sprintf("%s: unbound variable", variableName)),

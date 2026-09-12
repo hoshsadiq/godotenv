@@ -601,6 +601,62 @@ func TestReadLineContinuationEnv(t *testing.T) {
 	}
 }
 
+func TestUnboundVariableOption(t *testing.T) {
+	const unset = "GODOTENV_TEST_UNSET_VARIABLE"
+	_ = os.Unsetenv(unset)
+
+	tests := []struct {
+		name    string
+		input   string
+		opts    []godotenv.Option
+		want    map[string]string
+		wantErr bool
+	}{
+		{"unset expands empty by default", "FOO=$" + unset, nil, map[string]string{"FOO": ""}, false},
+		{"unset braced expands empty by default", "FOO=${" + unset + "}", nil, map[string]string{"FOO": ""}, false},
+		{"unset unbraced errors with option", "FOO=$" + unset, []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset braced errors with option", "FOO=${" + unset + "}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"default word is not an unbound error", "FOO=${" + unset + ":-fallback}", []godotenv.Option{godotenv.WithUnboundError()}, map[string]string{"FOO": "fallback"}, false},
+		{"set variable is fine", "BAR=1\nFOO=$BAR", []godotenv.Option{godotenv.WithUnboundError()}, map[string]string{"BAR": "1", "FOO": "1"}, false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := godotenv.New(tt.opts...).Unmarshal(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(tt.want, got) {
+				t.Errorf("expected %v, got %v", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestNewDefaultsMatchPackageFuncs(t *testing.T) {
+	t.Parallel()
+
+	input := "FOO=bar\nBAZ=${FOO}"
+	want, err := godotenv.Unmarshal(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, err := godotenv.New().Unmarshal(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("New() default differs: expected %v, got %v", want, got)
+	}
+}
+
 func TestErrorReadDirectory(t *testing.T) {
 	t.Parallel()
 

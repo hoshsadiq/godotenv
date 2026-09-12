@@ -30,12 +30,14 @@ type lookupEnvFunc func(name []byte) (value []byte, exists bool)
 type parser struct {
 	data       []byte
 	lineNumber int
+	cfg        config
 }
 
-func newParser(d []byte) *parser {
+func newParser(d []byte, cfg config) *parser {
 	return &parser{
 		data:       d,
 		lineNumber: 1,
+		cfg:        cfg,
 	}
 }
 
@@ -359,8 +361,9 @@ func (p *parser) expandParameter(characterStart int, s []byte, lookupEnv lookupE
 
 	value, envSet = lookupEnv(s[:i])
 	if i >= len(s) {
-		// todo error when not set
-		// return nil, p.newUnboundVariable(characterStart, s[:i])
+		if !envSet && p.cfg.unboundErr {
+			return nil, p.newUnboundVariable(characterStart, string(s[:i]))
+		}
 		return
 	}
 

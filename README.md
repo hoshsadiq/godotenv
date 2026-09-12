@@ -136,6 +136,48 @@ content := getRemoteFileContent()
 myEnv, err := godotenv.Unmarshal(content)
 ```
 
+### Options
+
+`godotenv.New` returns a `*Loader` that you configure once and reuse across
+`Load`, `Overload`, `Read`, `Parse` and `Unmarshal`:
+
+```go
+loader := godotenv.New(godotenv.WithPOSIX())
+
+env, err := loader.Read(".env")
+```
+
+There are two options:
+
+- `WithUnboundError()`: an unset `$VAR` or `${VAR}` returns an error instead of
+  expanding to an empty string. This is the equivalent of `set -u`.
+- `WithPOSIX()`: apply POSIX shell quoting rules. Inside double quotes only `$`,
+  `` ` ``, `"`, `\` and newline are special, so `"\n"` keeps its backslash, and
+  inside single quotes the backslash is literal. This option does not affect
+  `$'...'`, which always expands.
+
+The package-level `Load`, `Overload`, `Read`, `Parse`, `Unmarshal` and
+`ParseWithLookup` functions use the default behaviour.
+
+### Parameter Expansion
+
+`${...}` supports the POSIX shell forms. `${VAR}` reads the variable, while
+`${VAR:-word}`, `${VAR-word}`, `${VAR:+word}` and `${VAR+word}` choose between
+the value and a word, and that word is expanded recursively. `${#VAR}` gives
+the length, and `${VAR:?word}` or `${VAR?word}` raise an error when the variable
+is unset. The assignment forms `${VAR:=word}` and `${VAR=word}` are not
+supported.
+
+The pattern operators trim and replace text: `${VAR#pat}`, `${VAR##pat}`,
+`${VAR%pat}` and `${VAR%%pat}` remove prefixes and suffixes, `${VAR/pat/rep}`
+and `${VAR//pat/rep}` replace the first or every match, `${VAR/#pat/rep}` and
+`${VAR/%pat/rep}` anchor the match to the start or end, and `${VAR:offset}` or
+`${VAR:offset:length}` take a substring. Offsets may be negative, and patterns
+use shell globbing (`*`, `?`, `[...]`).
+
+`$'...'` is ANSI-C quoted and expands C-style escapes such as `\n`, `\t`,
+`\xHH`, `\uHHHH` and `\UHHHHHHHH`.
+
 ### Precedence & Conventions
 
 Existing envs take precedence of envs that are loaded later.
@@ -173,7 +215,7 @@ If you don't specify `-f` it will fall back on the default of loading `.env` in 
 
 ### Writing Env Files
 
-Godotenv can also write a map representing the environment to a correctly-formatted and escaped file
+Godotenv can also write a map back to a correctly formatted and escaped file. Values are preserved as they are: integer values stay unquoted, leading zeros included, and everything else is quoted.
 
 ```go
 env, err := godotenv.Unmarshal("KEY=value")

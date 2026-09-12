@@ -25,6 +25,7 @@ type Option func(*config)
 
 type config struct {
 	unboundErr bool
+	posix      bool
 }
 
 // WithUnboundError makes an unset variable reference ($VAR or ${VAR}) return an
@@ -32,6 +33,14 @@ type config struct {
 func WithUnboundError() Option {
 	return func(c *config) {
 		c.unboundErr = true
+	}
+}
+
+// WithPOSIX applies POSIX shell quoting rules: inside double quotes only $, `,
+// ", \ and newline are special, and backslash is literal inside single quotes.
+func WithPOSIX() Option {
+	return func(c *config) {
+		c.posix = true
 	}
 }
 

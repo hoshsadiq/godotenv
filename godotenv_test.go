@@ -815,6 +815,49 @@ func TestUnicodeEscapeInDoubleQuotes(t *testing.T) {
 	}
 }
 
+func TestWithPOSIX(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    []godotenv.Option
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"default double quote escapes", nil, `FOO="a\nb"`, "a\nb", false},
+		{"posix double quote literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\nb"`, `a\nb`, false},
+		{"posix tab literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\tb"`, `a\tb`, false},
+		{"posix escaped quote", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\"b"`, `a"b`, false},
+		{"posix escaped backslash", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\\b"`, `a\b`, false},
+		{"posix escaped dollar", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\$b"`, "a$b", false},
+		{"posix unknown escape literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\qb"`, `a\qb`, false},
+		{"posix unicode literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="\u0041"`, `\u0041`, false},
+		{"posix line continuation", []godotenv.Option{godotenv.WithPOSIX()}, "FOO=\"a\\\nb\"", "ab", false},
+		{"default single quote escape errors", nil, `FOO='a\'`, "", true},
+		{"posix single quote backslash literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO='a\'`, `a\`, false},
+		{"posix single quote backslash", []godotenv.Option{godotenv.WithPOSIX()}, `FOO='a\b'`, `a\b`, false},
+		{"posix ansi-c still expands", []godotenv.Option{godotenv.WithPOSIX()}, `FOO=$'a\nb'`, "a\nb", false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := godotenv.New(tt.opts...).Unmarshal(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
 func TestErrorReadDirectory(t *testing.T) {
 	t.Parallel()
 

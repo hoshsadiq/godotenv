@@ -190,7 +190,23 @@ func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error)
 			case '"':
 				state = stateValue
 			case '\\':
-				state = stateEscapeDouble
+				if p.cfg.posix {
+					if j+1 >= len(p.data) {
+						return p.newParserError(j, "incomplete escape sequence")
+					}
+					switch next := p.data[j+1]; next {
+					case '$', '`', '"', '\\':
+						value = append(value, next)
+						j++
+					case '\n':
+						p.lineNumber++
+						j++
+					default:
+						value = append(value, '\\')
+					}
+				} else {
+					state = stateEscapeDouble
+				}
 			case '\n':
 				p.lineNumber++
 				fallthrough
@@ -230,7 +246,11 @@ func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error)
 			case '\'':
 				state = stateValue
 			case '\\':
-				state = stateEscapeSingle
+				if p.cfg.posix {
+					value = append(value, '\\')
+				} else {
+					state = stateEscapeSingle
+				}
 			case '\n':
 				p.lineNumber++
 				fallthrough

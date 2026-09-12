@@ -217,7 +217,9 @@ func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error)
 			case 't':
 				value = append(value, '\t')
 			case 'u':
-				panic("todo parse: \\u")
+				decoded, width := decodeUnicodeEscape(p.data, j)
+				value = append(value, decoded...)
+				j += width
 			default:
 				value = append(value, c)
 			}
@@ -329,6 +331,8 @@ func (p *parser) resolveParameter(characterStart int, s []byte, lookupEnv lookup
 			}
 		}
 		return []byte("$"), 0, nil
+	case s[0] == '\'':
+		return p.ansiCString(characterStart, s)
 	case isShellSpecialVar(s[0]):
 		return []byte(""), 1, nil
 	default:
@@ -795,4 +799,114 @@ func matchClass(pattern []byte, start int, c byte) (int, bool) {
 	}
 
 	return i + 1, matched != negate
+}
+
+// ansiCString decodes a bash `$'...'` ANSI-C quoted string beginning at s[0].
+func (p *parser) ansiCString(characterStart int, s []byte) ([]byte, int, error) {
+	out := make([]byte, 0, len(s))
+
+	for i := 1; i < len(s); {
+		c := s[i]
+		switch {
+		case c == '\'':
+			return out, i + 1, nil
+		case c != '\\':
+			out = append(out, c)
+			i++
+		case i+1 >= len(s):
+			return nil, 0, p.newParserError(characterStart+i, "incomplete escape sequence")
+		default:
+			decoded, width, err := decodeEscape(s, i+1)
+			if err != nil {
+				return nil, 0, err
+			}
+			out = append(out, decoded...)
+			i += 1 + width
+		}
+	}
+
+	return nil, 0, p.newParserError(characterStart, "unmatched single quote")
+}
+
+// decodeEscape decodes the escape body that follows a backslash at s[j].
+func decodeEscape(s []byte, j int) ([]byte, int, error) {
+	switch s[j] {
+	case 'a':
+		return []byte{0x07}, 1, nil
+	case 'b':
+		return []byte{0x08}, 1, nil
+	case 'e', 'E':
+		return []byte{0x1b}, 1, nil
+	case 'f':
+		return []byte{0x0c}, 1, nil
+	case 'n':
+		return []byte{0x0a}, 1, nil
+	case 'r':
+		return []byte{0x0d}, 1, nil
+	case 't':
+		return []byte{0x09}, 1, nil
+	case 'v':
+		return []byte{0x0b}, 1, nil
+	case '\\', '\'', '"', '?':
+		return []byte{s[j]}, 1, nil
+	case 'x':
+		return decodeHexEscape(s, j, 2, false)
+	case 'u':
+		return decodeHexEscape(s, j, 4, true)
+	case 'U':
+		return decodeHexEscape(s, j, 8, true)
+	}
+
+	if s[j] >= '0' && s[j] <= '7' {
+		n, k := 0, 0
+		for k < 3 && j+k < len(s) && s[j+k] >= '0' && s[j+k] <= '7' {
+			n = n*8 + int(s[j+k]-'0')
+			k++
+		}
+		return []byte{byte(n)}, k, nil
+	}
+
+	return []byte{'\\', s[j]}, 1, nil
+}
+
+func decodeHexEscape(s []byte, j, max int, asRune bool) ([]byte, int, error) {
+	n, k := 0, 0
+	for k < max && j+1+k < len(s) && isHex(s[j+1+k]) {
+		n = n*16 + hexVal(s[j+1+k])
+		k++
+	}
+	if k == 0 {
+		return []byte{'\\', s[j]}, 1, nil
+	}
+	if asRune {
+		return []byte(string(rune(n))), 1 + k, nil
+	}
+	return []byte{byte(n)}, 1 + k, nil
+}
+
+func decodeUnicodeEscape(s []byte, j int) ([]byte, int) {
+	n, k := 0, 0
+	for k < 4 && j+1+k < len(s) && isHex(s[j+1+k]) {
+		n = n*16 + hexVal(s[j+1+k])
+		k++
+	}
+	if k == 0 {
+		return []byte{'u'}, 0
+	}
+	return []byte(string(rune(n))), k
+}
+
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
+}
+
+func hexVal(c byte) int {
+	switch {
+	case '0' <= c && c <= '9':
+		return int(c - '0')
+	case 'a' <= c && c <= 'f':
+		return int(c-'a') + 10
+	default:
+		return int(c-'A') + 10
+	}
 }

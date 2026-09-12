@@ -754,6 +754,67 @@ func TestParameterPatternsAndSubstrings(t *testing.T) {
 	}
 }
 
+func TestANSICQuoting(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"newline", `FOO=$'a\nb'`, "a\nb"},
+		{"tab", `FOO=$'a\tb'`, "a\tb"},
+		{"bell", `FOO=$'a\ab'`, "a\ab"},
+		{"backslash", `FOO=$'a\\b'`, `a\b`},
+		{"single quote", `FOO=$'it\'s'`, "it's"},
+		{"double quote", `FOO=$'say \"hi\"'`, `say "hi"`},
+		{"hex", `FOO=$'\x41'`, "A"},
+		{"octal", `FOO=$'\101'`, "A"},
+		{"unicode", `FOO=$'\u0041'`, "A"},
+		{"unknown escape", `FOO=$'\q'`, `\q`},
+		{"plain", `FOO=$'hello'`, "hello"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
+func TestUnicodeEscapeInDoubleQuotes(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"ascii", `FOO="\u0041"`, "A"},
+		{"latin", `FOO="caf\u00e9"`, "café"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
 func TestErrorReadDirectory(t *testing.T) {
 	t.Parallel()
 

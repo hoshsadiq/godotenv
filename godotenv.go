@@ -12,7 +12,6 @@
 package godotenv
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"sort"
@@ -182,14 +181,29 @@ func Write(envMap map[string]string, filename string) error {
 func Marshal(envMap map[string]string) (string, error) {
 	lines := make([]string, 0, len(envMap))
 	for k, v := range envMap {
-		if d, err := strconv.Atoi(v); err == nil {
-			lines = append(lines, fmt.Sprintf(`%s=%d`, k, d))
+		if isInt(v) {
+			lines = append(lines, k+"="+v)
 		} else {
-			lines = append(lines, fmt.Sprintf(`%s=%s`, k, strconv.Quote(v)))
+			lines = append(lines, k+"="+strconv.Quote(v))
 		}
 	}
 	sort.Strings(lines)
 	return strings.Join(lines, "\n"), nil
+}
+
+func isInt(s string) bool {
+	s = strings.TrimPrefix(s, "-")
+	if len(s) == 0 {
+		return false
+	}
+
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+
+	return true
 }
 
 func LookupEnv(name []byte) (value []byte, exists bool) {

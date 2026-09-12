@@ -902,6 +902,10 @@ func TestWrite(t *testing.T) {
 		{env: "foo=bar\nbaz=buzz", expected: "baz=\"buzz\"\nfoo=\"bar\""},
 		// integers should not be quoted
 		{env: `key="10"`, expected: `key=10`},
+		// integers keep their original representation
+		{env: `key=007`, expected: `key=007`},
+		{env: `key=-5`, expected: `key=-5`},
+		{env: `key="+5"`, expected: `key="+5"`},
 	}
 
 	t.Parallel()

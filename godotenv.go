@@ -25,6 +25,7 @@ type Option func(*config)
 type config struct {
 	unboundErr bool
 	posix      bool
+	restricted bool
 }
 
 // WithUnboundError makes an unset variable reference ($VAR or ${VAR}) return an
@@ -117,11 +118,11 @@ func Read(filenames ...string) (envMap map[string]string, err error) {
 // ParseWithLookup reads an env file from io.Reader, returning a map of keys and values.
 // It uses the lookupEnv to retrieve environment variables. Parse calls this function with
 // LookupEnv as the lookupEnv argument.
-func ParseWithLookup(r io.Reader, lookupEnv lookupEnvFunc) (envMap map[string]string, err error) {
+func ParseWithLookup(r io.Reader, lookupEnv LookupEnvFunc) (envMap map[string]string, err error) {
 	return parseConfig(r, config{}, lookupEnv)
 }
 
-func parseConfig(r io.Reader, cfg config, lookupEnv lookupEnvFunc) (envMap map[string]string, err error) {
+func parseConfig(r io.Reader, cfg config, lookupEnv LookupEnvFunc) (envMap map[string]string, err error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
@@ -130,7 +131,7 @@ func parseConfig(r io.Reader, cfg config, lookupEnv lookupEnvFunc) (envMap map[s
 	return parseWithLookup(data, cfg, lookupEnv)
 }
 
-func parseWithLookup(d []byte, cfg config, lookupEnv lookupEnvFunc) (envMap map[string]string, err error) {
+func parseWithLookup(d []byte, cfg config, lookupEnv LookupEnvFunc) (envMap map[string]string, err error) {
 	envMap = make(map[string]string)
 
 	expandEnv := func(s []byte) ([]byte, bool) {
@@ -156,6 +157,14 @@ func Parse(r io.Reader) (envMap map[string]string, err error) {
 // Unmarshal reads an env file from a string, returning a map of keys and values.
 func Unmarshal(str string) (envMap map[string]string, err error) {
 	return Parse(strings.NewReader(str))
+}
+
+// Expand resolves $VAR and ${VAR...} references in s using lookup, for
+// arbitrary strings such as configuration values. Only $NAME and ${...} are
+// interpreted. An unset variable with no modifier is an error.
+func Expand(s string, lookup LookupEnvFunc) (string, error) {
+	p := newParser([]byte(s), config{unboundErr: true, restricted: true})
+	return p.expandString(s, lookup)
 }
 
 // Write serializes the given environment and writes it to a file

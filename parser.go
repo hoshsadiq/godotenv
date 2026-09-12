@@ -23,10 +23,10 @@ const (
 	stateQuoteSingle
 )
 
-// lookupEnvFunc is used to determine the value of an environment, and whether it exists or not.
+// LookupEnvFunc is used to determine the value of an environment, and whether it exists or not.
 // This should only look at the application environment and not at previous parsed items in a .env file.
 // Previously parsed items in an .env file take precedence over the environment.
-type lookupEnvFunc func(name []byte) (value []byte, exists bool)
+type LookupEnvFunc func(name []byte) (value []byte, exists bool)
 
 type parser struct {
 	data       []byte
@@ -42,7 +42,7 @@ func newParser(d []byte, cfg config) *parser {
 	}
 }
 
-func (p *parser) parse(m map[string]string, lookupEnv lookupEnvFunc) (err error) {
+func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error) {
 	key := make([]byte, 0, len(p.data))
 	value := make([]byte, 0, len(p.data))
 	pendingWS := make([]byte, 0, len(p.data))
@@ -325,24 +325,16 @@ func isAlphaNum(c uint8) bool {
 // resolveParameter resolves the parameter starting at s and reports how many
 // bytes it consumed. It handles $NAME and the ${NAME<op><word>} forms from the
 // POSIX shell parameter expansion rules.
-func (p *parser) resolveParameter(characterStart int, s []byte, lookupEnv lookupEnvFunc) (res []byte, skip int, err error) {
+func (p *parser) resolveParameter(characterStart int, s []byte, lookupEnv LookupEnvFunc) (res []byte, skip int, err error) {
 	if len(s) == 0 {
 		return []byte("$"), 0, nil
 	}
 
 	switch {
 	case s[0] == '{':
-		end := matchBrace(s)
-		if end < 0 {
-			return nil, 0, p.newParserError(characterStart+1, "unexpected EOF while looking for matching '}'")
-		}
-
-		val, err := p.expandBraced(characterStart+1, s[1:end], lookupEnv)
-		if err != nil {
-			return nil, 0, err
-		}
-
-		return val, end + 1, nil
+		return p.expandBracedRef(characterStart, s, lookupEnv)
+	case p.cfg.restricted:
+		return p.resolveName(characterStart, s, lookupEnv)
 	case s[0] == '(':
 		// Command substitution is never executed. Preserve `$(...)` verbatim
 		for i := 1; i < len(s) && s[i] != '\n'; i++ {
@@ -356,22 +348,40 @@ func (p *parser) resolveParameter(characterStart int, s []byte, lookupEnv lookup
 	case isShellSpecialVar(s[0]):
 		return []byte(""), 1, nil
 	default:
-		var i int
-		if isAlpha(s[0]) || s[0] == '_' {
-			for i = 1; i < len(s) && isAlphaNum(s[i]); i++ {
-			}
-		}
-		if i == 0 {
-			return []byte("$"), 0, nil
-		}
-
-		value, envSet := lookupEnv(s[:i])
-		if !envSet && p.cfg.unboundErr {
-			return nil, 0, p.newUnboundVariable(characterStart, string(s[:i]))
-		}
-
-		return value, i, nil
+		return p.resolveName(characterStart, s, lookupEnv)
 	}
+}
+
+func (p *parser) expandBracedRef(characterStart int, s []byte, lookupEnv LookupEnvFunc) ([]byte, int, error) {
+	end := matchBrace(s)
+	if end < 0 {
+		return nil, 0, p.newParserError(characterStart+1, "unexpected EOF while looking for matching '}'")
+	}
+
+	val, err := p.expandBraced(characterStart+1, s[1:end], lookupEnv)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return val, end + 1, nil
+}
+
+func (p *parser) resolveName(characterStart int, s []byte, lookupEnv LookupEnvFunc) ([]byte, int, error) {
+	var i int
+	if isAlpha(s[0]) || s[0] == '_' {
+		for i = 1; i < len(s) && isAlphaNum(s[i]); i++ {
+		}
+	}
+	if i == 0 {
+		return []byte("$"), 0, nil
+	}
+
+	value, envSet := lookupEnv(s[:i])
+	if !envSet && p.cfg.unboundErr {
+		return nil, 0, p.newUnboundVariable(characterStart, string(s[:i]))
+	}
+
+	return value, i, nil
 }
 
 // matchBrace returns the index of the '}' closing the '{' at s[0], or -1 if the
@@ -394,7 +404,7 @@ func matchBrace(s []byte) int {
 	return -1
 }
 
-func (p *parser) expandBraced(characterStart int, inner []byte, lookupEnv lookupEnvFunc) (value []byte, err error) {
+func (p *parser) expandBraced(characterStart int, inner []byte, lookupEnv LookupEnvFunc) (value []byte, err error) {
 	if len(inner) == 0 {
 		return nil, p.newParserError(characterStart, "bad substitution: empty")
 	}
@@ -480,7 +490,29 @@ func (p *parser) expandBraced(characterStart int, inner []byte, lookupEnv lookup
 }
 
 // expandWord re-scans the word of a parameter expansion for nested $ expansions.
-func (p *parser) expandWord(characterStart int, w []byte, lookupEnv lookupEnvFunc) ([]byte, error) {
+// expandString resolves $NAME and ${...} references in s. It backs Expand.
+func (p *parser) expandString(s string, lookupEnv LookupEnvFunc) (string, error) {
+	data := []byte(s)
+	out := make([]byte, 0, len(data))
+
+	for j := 0; j < len(data); j++ {
+		if data[j] != '$' {
+			out = append(out, data[j])
+			continue
+		}
+
+		res, skip, err := p.resolveParameter(j, data[j+1:], lookupEnv)
+		if err != nil {
+			return "", err
+		}
+		out = append(out, res...)
+		j += skip
+	}
+
+	return string(out), nil
+}
+
+func (p *parser) expandWord(characterStart int, w []byte, lookupEnv LookupEnvFunc) ([]byte, error) {
 	out := make([]byte, 0, len(w))
 	for j := 0; j < len(w); j++ {
 		switch w[j] {
@@ -503,7 +535,7 @@ func (p *parser) expandWord(characterStart int, w []byte, lookupEnv lookupEnvFun
 	return out, nil
 }
 
-func (p *parser) newParameterError(characterStart int, name []byte, wordOffset int, word []byte, lookupEnv lookupEnvFunc) error {
+func (p *parser) newParameterError(characterStart int, name []byte, wordOffset int, word []byte, lookupEnv LookupEnvFunc) error {
 	msg, err := p.expandWord(characterStart+wordOffset, word, lookupEnv)
 	if err != nil {
 		return err
@@ -564,7 +596,7 @@ func (p *parser) stripSuffix(value, rest []byte) ([]byte, error) {
 	return value, nil
 }
 
-func (p *parser) replace(characterStart int, value, rest []byte, lookupEnv lookupEnvFunc) ([]byte, error) {
+func (p *parser) replace(characterStart int, value, rest []byte, lookupEnv LookupEnvFunc) ([]byte, error) {
 	spec := rest[1:]
 	all := false
 	if len(spec) > 0 && spec[0] == '/' {

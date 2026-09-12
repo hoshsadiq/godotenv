@@ -178,6 +178,19 @@ use shell globbing (`*`, `?`, `[...]`).
 `$'...'` is ANSI-C quoted and expands C-style escapes such as `\n`, `\t`,
 `\xHH`, `\uHHHH` and `\UHHHHHHHH`.
 
+### Expanding Arbitrary Strings
+
+`Expand` resolves references inside a single string, for configuration values
+that are not `.env` syntax:
+
+```go
+out, err := godotenv.Expand("token=${API_KEY}", godotenv.LookupEnv)
+```
+
+Only `$NAME` and `${...}` are interpreted. An unset variable with no modifier
+is an error. `LookupEnvFunc` is the lookup signature shared by `Expand` and
+`ParseWithLookup`.
+
 ### Precedence & Conventions
 
 Existing envs take precedence of envs that are loaded later.

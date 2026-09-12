@@ -858,6 +858,63 @@ func TestWithPOSIX(t *testing.T) {
 	}
 }
 
+func TestExpand(t *testing.T) {
+	lookup := func(name []byte) ([]byte, bool) {
+		switch string(name) {
+		case "HOME":
+			return []byte("/home/me"), true
+		case "EMPTY":
+			return []byte(""), true
+		}
+		return nil, false
+	}
+
+	tests := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"braced", "path=${HOME}/x", "path=/home/me/x", false},
+		{"unbraced", "path=$HOME/x", "path=/home/me/x", false},
+		{"default", "${MISSING:-fallback}", "fallback", false},
+		{"dash default", "${MISSING-fallback}", "fallback", false},
+		{"colon plus on empty", "${EMPTY:+set}", "", false},
+		{"plus on empty", "${EMPTY+set}", "set", false},
+		{"recursive", "${MISSING:-${HOME}}", "/home/me", false},
+		{"braced unset errors", "${MISSING}", "", true},
+		{"unbraced unset errors", "$MISSING", "", true},
+		{"ansi-c stays literal", `$'a\nb'`, `$'a\nb'`, false},
+		{"positional stays literal", "$1", "$1", false},
+		{"special stays literal", "$?", "$?", false},
+		{"command substitution stays literal", "$(echo hi)", "$(echo hi)", false},
+		{"backticks stay literal", "`echo hi`", "`echo hi`", false},
+		{"trailing dollar", "cost is $", "cost is $", false},
+		{"plain text", "just a token", "just a token", false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.Expand(tt.in, lookup)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected an error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
 func TestErrorReadDirectory(t *testing.T) {
 	t.Parallel()
 

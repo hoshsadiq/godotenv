@@ -315,6 +315,14 @@ func (p *parser) resolveParameter(characterStart int, s []byte, lookupEnv lookup
 		// one idea might be to have a special option that allows
 		// one to pass in the relevant arguments and expansion possibilities
 		return []byte(""), 1, nil
+	case s[0] == '(':
+		// Command substitution is never executed. Preserve `$(...)` verbatim
+		for i := 1; i < len(s) && s[i] != '\n'; i++ {
+			if s[i] == ')' {
+				return append([]byte("$"), s[:i+1]...), i + 1, nil
+			}
+		}
+		return []byte("$"), 0, nil
 	default:
 		// Scan alphanumerics.
 		var i int

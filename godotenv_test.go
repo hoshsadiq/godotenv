@@ -485,6 +485,11 @@ func TestParsing(t *testing.T) {
 		{rawEnvLine: "FOO=a b c", expectedKey: "FOO", expectedValue: "a b c"},
 		{rawEnvLine: "FOO=a  b", expectedKey: "FOO", expectedValue: "a  b"},
 		{rawEnvLine: "FOO=a\tb", expectedKey: "FOO", expectedValue: "a\tb"},
+
+		// command substitution is preserved verbatim
+		{rawEnvLine: `FOO=$(echo hi)`, expectedKey: "FOO", expectedValue: "$(echo hi)"},
+		{rawEnvLine: "FOO=`echo hi`", expectedKey: "FOO", expectedValue: "`echo hi`"},
+		{rawEnvLine: `FOO=$(echo $BAR)`, expectedKey: "FOO", expectedValue: "$(echo $BAR)"},
 	}
 
 	t.Parallel()

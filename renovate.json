@@ -64,15 +64,6 @@
   "customManagers": [
     {
       "customType": "regex",
-      "managerFilePatterns": ["/^\\.github/workflows/.*\\.ya?ml$/"],
-      "matchStrings": [
-        "uses:\\s+(?<depName>[^@\\s]+)@(?<currentValue>v[\\d.]+)\\s*#\\s*(?<currentDigest>[a-f0-9]{40})"
-      ],
-      "datasourceTemplate": "github-tags",
-      "versioningTemplate": "semver"
-    },
-    {
-      "customType": "regex",
       "managerFilePatterns": ["/(^|/)go\\.mod$/"],
       "matchStrings": ["^go (?<currentValue>\\d+\\.\\d+)"],
       "datasourceTemplate": "golang-version",

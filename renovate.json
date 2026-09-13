@@ -37,6 +37,13 @@
       "groupSlug": "mise"
     },
     {
+      "matchDatasources": ["golang-version"],
+      "matchPackageNames": ["go"],
+      "groupName": "go minimum version",
+      "minimumReleaseAge": "540 days",
+      "rangeStrategy": "replace"
+    },
+    {
       "matchDatasources": ["docker"],
       "matchPackageNames": ["golang", "alpine", "debian", "ubuntu", "distroless"],
       "groupName": "base images"
@@ -63,6 +70,15 @@
       ],
       "datasourceTemplate": "github-tags",
       "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)go\\.mod$/"],
+      "matchStrings": ["^go (?<currentValue>\\d+\\.\\d+)"],
+      "datasourceTemplate": "golang-version",
+      "depNameTemplate": "go",
+      "versioningTemplate": "npm",
+      "extractVersionTemplate": "^(?<version>\\d+\\.\\d+)"
     }
   ]
 }

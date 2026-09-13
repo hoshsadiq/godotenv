@@ -1,4 +1,5 @@
 [tools]
+go = "1.27"
 "github:j178/prek" = "v0.5.1"
 "github:golangci/golangci-lint" = "v2.13.2"
 "github:mvdan/gofumpt" = "v0.11.0"

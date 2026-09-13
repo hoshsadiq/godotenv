@@ -57,6 +57,10 @@ run = "prek install --install-hooks"
 description = "Build a local snapshot"
 run = "goreleaser build --snapshot --clean"
 
+[tasks.release]
+description = "Full release via goreleaser"
+run = "goreleaser release --clean"
+
 [tasks."release:dry"]
 description = "Snapshot release (no publish)"
 run = "goreleaser release --snapshot --clean"

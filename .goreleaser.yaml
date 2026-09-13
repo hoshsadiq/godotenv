@@ -1,3 +1,5 @@
+version: 2
+
 project_name: godotenv
 
 env:
@@ -13,7 +15,7 @@ release:
     name: godotenv
 
 snapshot:
-  name_template: "{{ .Version }}{{ if .IsSnapshot }}-snapshot{{ else if .IsNightly }}-nightly{{ end }}"
+  version_template: "{{ incpatch .Version }}-next+{{ .ShortCommit }}"
 
 checksum:
   name_template: "{{ .ProjectName }}_checksums.txt"
@@ -68,10 +70,10 @@ builds:
 
     ldflags:
       - -s -w
-      - -X 'github.com/hoshsadiq/godotenv/version.version={{.Version}}'
-      - -X 'github.com/hoshsadiq/godotenv/version.gitCommit={{.ShortCommit}}'
-      - -X 'github.com/hoshsadiq/godotenv/version.projectName=godotenv'
-      - -X 'github.com/hoshsadiq/godotenv/version.projectURL=https://github.com/hoshsadiq/godotenv'
+      - -X 'main.version={{.Version}}'
+      - -X 'main.gitCommit={{.ShortCommit}}'
+      - -X 'main.projectName=godotenv'
+      - -X 'main.projectURL=https://github.com/hoshsadiq/godotenv'
 
 dockers:
   - &docker_build

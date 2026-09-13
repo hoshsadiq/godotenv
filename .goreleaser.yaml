@@ -75,103 +75,25 @@ builds:
       - -X 'main.projectName=godotenv'
       - -X 'main.projectURL=https://github.com/hoshsadiq/godotenv'
 
-dockers:
-  - &docker_build
-    goos: linux
-    goarch: amd64
-    ids:
+dockers_v2:
+  - ids:
       - godotenv
-    skip_push: "false"
-    use: buildx
-
-    image_templates:
-      - &docker_tag_amd64 "ghcr.io/hoshsadiq/godotenv:{{ .Tag }}-amd64"
-      - &docker_major_amd64 "ghcr.io/hoshsadiq/godotenv:v{{ .Major }}-amd64"
-      - &docker_major_minor_amd64 "ghcr.io/hoshsadiq/godotenv:v{{ .Major }}.{{ .Minor }}-amd64"
-      - &docker_latest_amd64 "ghcr.io/hoshsadiq/godotenv:latest-amd64"
-
-    build_flag_templates:
-      - "--platform=linux/amd64"
-      - &build_flag_tmpl_date "--label=org.opencontainers.image.created={{.Date}}"
-      - &build_flag_tmpl_name "--label=org.opencontainers.image.name={{.ProjectName}}"
-      - &build_flag_tmpl_commit "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - &build_flag_tmpl_version "--label=org.opencontainers.image.version={{.Version}}"
-      - &build_flag_tmpl_url "--label=org.opencontainers.image.source={{.GitURL}}"
-
     dockerfile: Dockerfile.goreleaser
-
-  - <<: *docker_build
-    goarch: arm
-    goarm: "6"
-    image_templates:
-      - &docker_tag_arm32v6 "ghcr.io/hoshsadiq/godotenv:latest-arm32v6"
-      - &docker_major_arm32v6 "ghcr.io/hoshsadiq/godotenv:{{ .Tag }}-arm32v6"
-      - &docker_major_minor_arm32v6 "ghcr.io/hoshsadiq/godotenv:v{{ .Major }}-arm32v6"
-      - &docker_latest_arm32v6 "ghcr.io/hoshsadiq/godotenv:v{{ .Major }}.{{ .Minor }}-arm32v6"
-
-    build_flag_templates:
-      - "--platform=linux/arm"
-      - *build_flag_tmpl_date
-      - *build_flag_tmpl_name
-      - *build_flag_tmpl_commit
-      - *build_flag_tmpl_version
-      - *build_flag_tmpl_url
-
-  - <<: *docker_build
-    goarch: arm
-    goarm: "7"
-    image_templates:
-      - &docker_tag_arm32v7 "ghcr.io/hoshsadiq/godotenv:latest-arm32v7"
-      - &docker_major_arm32v7 "ghcr.io/hoshsadiq/godotenv:{{ .Tag }}-arm32v7"
-      - &docker_major_minor_arm32v7 "ghcr.io/hoshsadiq/godotenv:v{{ .Major }}-arm32v7"
-      - &docker_latest_arm32v7 "ghcr.io/hoshsadiq/godotenv:v{{ .Major }}.{{ .Minor }}-arm32v7"
-
-    build_flag_templates:
-      - "--platform=linux/arm/v7"
-      - *build_flag_tmpl_date
-      - *build_flag_tmpl_name
-      - *build_flag_tmpl_commit
-      - *build_flag_tmpl_version
-      - *build_flag_tmpl_url
-
-  - <<: *docker_build
-    goarch: arm64
-    image_templates:
-      - &docker_tag_arm64v8 "ghcr.io/hoshsadiq/godotenv:latest-arm64v8"
-      - &docker_major_arm64v8 "ghcr.io/hoshsadiq/godotenv:{{ .Tag }}-arm64v8"
-      - &docker_major_minor_arm64v8 "ghcr.io/hoshsadiq/godotenv:v{{ .Major }}-arm64v8"
-      - &docker_latest_arm64v8 "ghcr.io/hoshsadiq/godotenv:v{{ .Major }}.{{ .Minor }}-arm64v8"
-
-    build_flag_templates:
-      - "--platform=linux/arm64"
-      - *build_flag_tmpl_date
-      - *build_flag_tmpl_name
-      - *build_flag_tmpl_commit
-      - *build_flag_tmpl_version
-      - *build_flag_tmpl_url
-
-docker_manifests:
-  - name_template: "ghcr.io/hoshsadiq/godotenv:latest"
-    image_templates:
-      - *docker_latest_amd64
-      - *docker_latest_arm32v6
-      - *docker_latest_arm32v7
-      - *docker_latest_arm64v8
-  - name_template: "ghcr.io/hoshsadiq/godotenv:{{ .Tag }}"
-    image_templates:
-      - *docker_tag_amd64
-      - *docker_tag_arm32v6
-      - *docker_tag_arm32v7
-      - *docker_tag_arm64v8
-  - name_template: "ghcr.io/hoshsadiq/godotenv:v{{ .Major }}"
-    image_templates:
-      - *docker_major_amd64
-      - *docker_major_arm32v6
-      - *docker_major_arm32v7
-      - *docker_major_arm64v8
-  - name_template: "ghcr.io/hoshsadiq/godotenv:v{{ .Major }}.{{ .Minor }}"
-    image_templates:
-      - *docker_major_minor_amd64
-      - *docker_major_minor_arm32v6
-      - *docker_major_minor_arm32v7
-      - *docker_major_minor_arm64v8
+    images:
+      - ghcr.io/hoshsadiq/godotenv
+    tags:
+      - "{{ .Tag }}"
+      - "v{{ .Major }}"
+      - "v{{ .Major }}.{{ .Minor }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    platforms:
+      - linux/amd64
+      - linux/arm/v6
+      - linux/arm/v7
+      - linux/arm64
+    annotations:
+      "org.opencontainers.image.created": "{{ .Date }}"
+      "org.opencontainers.image.name": "{{ .ProjectName }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.version": "{{ .Version }}"
+      "org.opencontainers.image.source": "{{ .GitURL }}"

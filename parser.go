@@ -240,13 +240,12 @@ func (p *parser) parseValue(c *cursor, lookupEnv LookupEnvFunc) error {
 			}
 
 			p.flushPending()
-			res, skip, err := p.resolveParameter(c.pos, c.data[c.pos+1:], true, lookupEnv)
+			res, err := p.expandDollar(c, true, lookupEnv)
 			if err != nil {
 				return err
 			}
 
 			p.value = append(p.value, res...)
-			c.advance(1 + skip)
 		case ' ', '\t':
 			p.pendingWS = append(p.pendingWS, ch)
 			c.advance(1)
@@ -311,13 +310,12 @@ func (p *parser) parseDoubleQuoted(c *cursor, lookupEnv LookupEnvFunc) error {
 			c.advance(1)
 			return nil
 		case '$':
-			res, skip, err := p.resolveParameter(c.pos, c.data[c.pos+1:], false, lookupEnv)
+			res, err := p.expandDollar(c, false, lookupEnv)
 			if err != nil {
 				return err
 			}
 
 			p.value = append(p.value, res...)
-			c.advance(1 + skip)
 		case '\\':
 			if !p.cfg.posix {
 				if err := p.parseDoubleQuoteEscape(c); err != nil {
@@ -478,337 +476,482 @@ func isAlphaNum(c uint8) bool {
 	return isNum(c) || isAlpha(c) || c == '_'
 }
 
-// resolveParameter resolves the parameter starting at s and reports how many
-// bytes it consumed. It handles $NAME and the ${NAME<op><word>} forms from the
-// POSIX shell parameter expansion rules.
-func (p *parser) resolveParameter(characterStart int, s []byte, allowANSI bool, lookupEnv LookupEnvFunc) (res []byte, skip int, err error) {
-	if len(s) == 0 {
-		return []byte("$"), 0, nil
+// expandDollar consumes the parameter starting at the '$' under the cursor and
+// returns its expansion. It handles $NAME and the ${NAME<op><word>} forms from
+// the POSIX shell parameter expansion rules.
+func (p *parser) expandDollar(c *cursor, allowANSI bool, lookupEnv LookupEnvFunc) ([]byte, error) {
+	dollar := c.pos
+	c.advance(1)
+
+	if c.eof() {
+		return []byte("$"), nil
 	}
 
-	switch {
-	case s[0] == '{':
-		return p.expandBracedRef(characterStart, s, lookupEnv)
+	switch ch := c.peek(); {
+	case ch == '{':
+		return p.parseBraced(c, lookupEnv)
 	case p.cfg.restricted:
-		return p.resolveName(characterStart, s, lookupEnv)
-	case s[0] == '(':
-		// Command substitution is never executed. Preserve `$(...)` verbatim,
-		// taking nested parentheses and quoted strings into account.
-		depth := 0
-		var quote byte
-
-		for i := 0; i < len(s); i++ {
-			switch c := s[i]; {
-			case c == '\n':
-				return []byte("$"), 0, nil
-			case quote == '\'':
-				if c == '\'' {
-					quote = 0
-				}
-			case quote == '"':
-				switch c {
-				case '\\':
-					i++
-				case '"':
-					quote = 0
-				}
-			case c == '\'' || c == '"':
-				quote = c
-			case c == '\\':
-				i++
-			case c == '(':
-				depth++
-			case c == ')':
-				depth--
-				if depth == 0 {
-					return append([]byte("$"), s[:i+1]...), i + 1, nil
-				}
-			}
+		return p.expandName(c, dollar, lookupEnv)
+	case ch == '(':
+		end, ok := scanCommandSub(c.data, c.pos)
+		if !ok {
+			return []byte("$"), nil
 		}
 
-		return []byte("$"), 0, nil
-	case allowANSI && s[0] == '\'':
-		return p.ansiCString(characterStart, s)
-	case allowANSI && s[0] == '"':
-		return nil, 0, nil
-	case isShellSpecialVar(s[0]):
-		return []byte(""), 1, nil
+		res := append([]byte("$"), c.data[c.pos:end]...)
+		c.pos = end
+
+		return res, nil
+	case allowANSI && ch == '\'':
+		return p.parseAnsiC(c)
+	case allowANSI && ch == '"':
+		return nil, nil
+	case isShellSpecialVar(ch):
+		c.advance(1)
+		return nil, nil
 	default:
-		return p.resolveName(characterStart, s, lookupEnv)
+		return p.expandName(c, dollar, lookupEnv)
 	}
 }
 
-func (p *parser) expandBracedRef(characterStart int, s []byte, lookupEnv LookupEnvFunc) ([]byte, int, error) {
-	end := matchBrace(s)
-	if end < 0 {
-		return nil, 0, p.newParserError(characterStart+1, "unexpected EOF while looking for matching '}'")
+func (p *parser) expandName(c *cursor, dollar int, lookupEnv LookupEnvFunc) ([]byte, error) {
+	if c.eof() || (!isAlpha(c.peek()) && c.peek() != '_') {
+		return []byte("$"), nil
 	}
 
-	val, err := p.expandBraced(characterStart+1, s[1:end], lookupEnv)
-	if err != nil {
-		return nil, 0, err
+	start := c.pos
+	for !c.eof() && isAlphaNum(c.peek()) {
+		c.advance(1)
 	}
 
-	return val, end + 1, nil
-}
-
-func (p *parser) resolveName(characterStart int, s []byte, lookupEnv LookupEnvFunc) ([]byte, int, error) {
-	var i int
-	if isAlpha(s[0]) || s[0] == '_' {
-		for i = 1; i < len(s) && isAlphaNum(s[i]); i++ {
-		}
-	}
-	if i == 0 {
-		return []byte("$"), 0, nil
-	}
-
-	value, envSet := lookupEnv(s[:i])
+	name := c.data[start:c.pos]
+	value, envSet := lookupEnv(name)
 	if !envSet && p.cfg.unboundErr {
-		return nil, 0, p.newUnboundVariable(characterStart, string(s[:i]))
+		return nil, p.newUnboundVariable(dollar, string(name))
 	}
 
-	return value, i, nil
+	return value, nil
 }
 
-// matchBrace returns the index of the '}' closing the '{' at s[0], or -1 if the
-// brace is never closed. Nested `${...}` and quoted strings are taken into
-// account.
-func matchBrace(s []byte) int {
+// scanCommandSub returns the offset just past the ')' closing the '(' at start.
+// Command substitution is never executed; it is only preserved verbatim.
+func scanCommandSub(data []byte, start int) (end int, ok bool) {
 	depth := 0
 	var quote byte
 
-	for i := 0; i < len(s); i++ {
-		switch c := s[i]; {
+	for i := start; i < len(data); i++ {
+		switch ch := data[i]; {
+		case ch == '\n':
+			return 0, false
 		case quote == '\'':
-			if c == '\'' {
+			if ch == '\'' {
 				quote = 0
 			}
 		case quote == '"':
-			switch c {
+			switch ch {
 			case '\\':
 				i++
 			case '"':
 				quote = 0
 			}
-		case c == '\'' || c == '"':
-			quote = c
-		case c == '\\':
+		case ch == '\'' || ch == '"':
+			quote = ch
+		case ch == '\\':
 			i++
-		case c == '{':
+		case ch == '(':
 			depth++
-		case c == '}':
+		case ch == ')':
 			depth--
 			if depth == 0 {
-				return i
+				return i + 1, true
 			}
 		}
 	}
 
-	return -1
+	return 0, false
 }
 
-func (p *parser) expandBraced(characterStart int, inner []byte, lookupEnv LookupEnvFunc) (value []byte, err error) {
-	if len(inner) == 0 {
-		return nil, p.newParserError(characterStart, "bad substitution: empty")
+func (p *parser) parseBraced(c *cursor, lookupEnv LookupEnvFunc) ([]byte, error) {
+	brace := c.pos
+	c.advance(1)
+
+	if c.peek() == '#' {
+		return p.parseLength(c, brace, lookupEnv)
+	}
+	if c.peek() == '}' {
+		return nil, p.newParserError(brace, "bad substitution: empty")
 	}
 
-	if inner[0] == '#' && len(inner) > 1 {
-		name := inner[1:]
-
-		var i int
-		if isAlpha(name[0]) || name[0] == '_' {
-			for i = 1; i < len(name) && isAlphaNum(name[i]); i++ {
-			}
-		}
-		if i == 0 || i != len(name) {
-			return nil, p.newParserError(characterStart, "bad substitution")
-		}
-
-		v, envSet := lookupEnv(name)
-		if !envSet && p.cfg.unboundErr {
-			return nil, p.newUnboundVariable(characterStart, string(name))
-		}
-
-		return []byte(strconv.Itoa(utf8.RuneCount(v))), nil
+	name := p.parseName(c)
+	if len(name) == 0 {
+		return nil, p.newParserError(brace, "bad substitution")
 	}
 
-	var i int
-	if isAlpha(inner[0]) || inner[0] == '_' {
-		for i = 1; i < len(inner) && isAlphaNum(inner[i]); i++ {
-		}
-	}
-	if i == 0 {
-		return nil, p.newParserError(characterStart, "bad substitution")
-	}
-
-	name := inner[:i]
+	nameEnd := c.pos
 	value, envSet := lookupEnv(name)
-	rest := inner[i:]
 
-	if len(rest) == 0 {
-		if !envSet && p.cfg.unboundErr {
-			return nil, p.newUnboundVariable(characterStart, string(name))
-		}
-		return value, nil
+	if c.eof() {
+		return nil, p.newParserError(brace, "unexpected EOF while looking for matching '}'")
 	}
 
-	switch rest[0] {
-	case ':':
-		if len(rest) == 1 {
-			return nil, p.newParserError(characterStart+i, "bad substitution: no modifier")
+	colon := false
+	if c.peek() == ':' {
+		colon = true
+		c.advance(1)
+		if c.eof() || c.peek() == '}' {
+			return nil, p.newParserError(nameEnd, "bad substitution: no modifier")
 		}
+	}
 
-		switch rest[1] {
+	opPos := c.pos
+
+	if colon {
+		switch op := c.peek(); op {
 		case '-':
+			c.advance(1)
 			if !envSet || len(value) == 0 {
-				return p.expandWord(characterStart+i+2, rest[2:], lookupEnv)
+				return p.parseWordUntilBrace(c, brace, lookupEnv)
+			}
+			if err := p.skipWord(c, brace); err != nil {
+				return nil, err
 			}
 			return value, nil
 		case '+':
+			c.advance(1)
 			if len(value) > 0 {
-				return p.expandWord(characterStart+i+2, rest[2:], lookupEnv)
+				return p.parseWordUntilBrace(c, brace, lookupEnv)
+			}
+			if err := p.skipWord(c, brace); err != nil {
+				return nil, err
 			}
 			return nil, nil
 		case '?':
+			c.advance(1)
 			if !envSet || len(value) == 0 {
-				return nil, p.newParameterError(characterStart, name, i+2, rest[2:], lookupEnv)
+				return p.parameterError(c, brace, name, lookupEnv)
+			}
+			if err := p.skipWord(c, brace); err != nil {
+				return nil, err
 			}
 			return value, nil
 		case '=':
-			return nil, p.newParserError(characterStart+i, "bad substitution: assignment is not supported")
+			return nil, p.newParserError(opPos, "bad substitution: assignment is not supported")
 		default:
-			return p.substring(characterStart+i, value, rest[1:])
+			return p.expandSubstring(c, brace, opPos, value)
 		}
+	}
+
+	switch op := c.peek(); op {
+	case '}':
+		c.advance(1)
+		if !envSet && p.cfg.unboundErr {
+			return nil, p.newUnboundVariable(brace, string(name))
+		}
+		return value, nil
 	case '-':
+		c.advance(1)
 		if !envSet {
-			return p.expandWord(characterStart+i+1, rest[1:], lookupEnv)
+			return p.parseWordUntilBrace(c, brace, lookupEnv)
+		}
+		if err := p.skipWord(c, brace); err != nil {
+			return nil, err
 		}
 		return value, nil
 	case '+':
+		c.advance(1)
 		if envSet {
-			return p.expandWord(characterStart+i+1, rest[1:], lookupEnv)
+			return p.parseWordUntilBrace(c, brace, lookupEnv)
+		}
+		if err := p.skipWord(c, brace); err != nil {
+			return nil, err
 		}
 		return nil, nil
 	case '?':
+		c.advance(1)
 		if !envSet {
-			return nil, p.newParameterError(characterStart, name, i+1, rest[1:], lookupEnv)
+			return p.parameterError(c, brace, name, lookupEnv)
+		}
+		if err := p.skipWord(c, brace); err != nil {
+			return nil, err
 		}
 		return value, nil
 	case '=':
-		return nil, p.newParserError(characterStart+i, "bad substitution: assignment is not supported")
-	case '#':
-		return p.stripPrefix(value, rest)
-	case '%':
+		return nil, p.newParserError(opPos, "bad substitution: assignment is not supported")
+	case '#', '%':
+		rest := scanRaw(c, false)
+		if err := p.consumeBrace(c, brace); err != nil {
+			return nil, err
+		}
+		if op == '#' {
+			return p.stripPrefix(value, rest)
+		}
 		return p.stripSuffix(value, rest)
 	case '/':
-		return p.replace(characterStart+i, value, rest, lookupEnv)
+		return p.expandReplace(c, brace, value, lookupEnv)
 	default:
-		return nil, p.newParserError(characterStart+i, "bad substitution: unsupported operator")
+		return nil, p.newParserError(opPos, "bad substitution: unsupported operator")
 	}
 }
 
-// expandWord re-scans the word of a parameter expansion for nested $ expansions.
-// expandString resolves $NAME and ${...} references in s. It backs Expand.
-func (p *parser) expandString(s string, lookupEnv LookupEnvFunc) (string, error) {
-	data := []byte(s)
-	out := make([]byte, 0, len(data))
+func (p *parser) parseLength(c *cursor, brace int, lookupEnv LookupEnvFunc) ([]byte, error) {
+	c.advance(1)
 
-	for j := 0; j < len(data); j++ {
-		if data[j] != '$' {
-			out = append(out, data[j])
+	name := p.parseName(c)
+	if len(name) == 0 || c.eof() || c.peek() != '}' {
+		return nil, p.newParserError(brace, "bad substitution")
+	}
+	c.advance(1)
+
+	value, envSet := lookupEnv(name)
+	if !envSet && p.cfg.unboundErr {
+		return nil, p.newUnboundVariable(brace, string(name))
+	}
+
+	return []byte(strconv.Itoa(utf8.RuneCount(value))), nil
+}
+
+func (p *parser) parseName(c *cursor) []byte {
+	if c.eof() || (!isAlpha(c.peek()) && c.peek() != '_') {
+		return nil
+	}
+
+	start := c.pos
+	for !c.eof() && isAlphaNum(c.peek()) {
+		c.advance(1)
+	}
+
+	return c.data[start:c.pos]
+}
+
+func (p *parser) parseWordUntilBrace(c *cursor, brace int, lookupEnv LookupEnvFunc) ([]byte, error) {
+	word, err := p.parseWord(c, lookupEnv)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.consumeBrace(c, brace); err != nil {
+		return nil, err
+	}
+
+	return word, nil
+}
+
+func (p *parser) skipWord(c *cursor, brace int) error {
+	scanRaw(c, false)
+	return p.consumeBrace(c, brace)
+}
+
+func (p *parser) consumeBrace(c *cursor, brace int) error {
+	if c.eof() || c.peek() != '}' {
+		return p.newParserError(brace, "unexpected EOF while looking for matching '}'")
+	}
+	c.advance(1)
+
+	return nil
+}
+
+func (p *parser) parameterError(c *cursor, brace int, name []byte, lookupEnv LookupEnvFunc) ([]byte, error) {
+	word, err := p.parseWord(c, lookupEnv)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.consumeBrace(c, brace); err != nil {
+		return nil, err
+	}
+
+	if len(word) == 0 {
+		return nil, p.newParserError(brace, fmt.Sprintf("%s: parameter not set", name))
+	}
+
+	return nil, p.newParserError(brace, fmt.Sprintf("%s: %s", name, word))
+}
+
+func (p *parser) expandSubstring(c *cursor, brace, opPos int, value []byte) ([]byte, error) {
+	spec := scanRaw(c, false)
+	if err := p.consumeBrace(c, brace); err != nil {
+		return nil, err
+	}
+
+	return p.substring(opPos, value, spec)
+}
+
+func (p *parser) expandReplace(c *cursor, brace int, value []byte, lookupEnv LookupEnvFunc) ([]byte, error) {
+	c.advance(1)
+
+	all := false
+	if c.peek() == '/' {
+		all = true
+		c.advance(1)
+	}
+
+	var anchor byte
+	if c.peek() == '#' || c.peek() == '%' {
+		anchor = c.peek()
+		c.advance(1)
+	}
+
+	pattern := scanRaw(c, true)
+
+	var replacement []byte
+	if c.peek() == '/' {
+		c.advance(1)
+
+		var err error
+		if replacement, err = p.parseWord(c, lookupEnv); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := p.consumeBrace(c, brace); err != nil {
+		return nil, err
+	}
+
+	return p.replace(value, pattern, replacement, all, anchor), nil
+}
+
+func scanRaw(c *cursor, stopAtSlash bool) []byte {
+	start := c.pos
+	depth := 0
+	var quote byte
+
+	for !c.eof() {
+		switch ch := c.peek(); {
+		case ch == '\\':
+			c.advance(2)
 			continue
+		case stopAtSlash && ch == '/':
+			return c.data[start:c.pos]
+		case quote == '\'':
+			if ch == '\'' {
+				quote = 0
+			}
+		case quote == '"':
+			if ch == '"' {
+				quote = 0
+			}
+		case ch == '\'' || ch == '"':
+			quote = ch
+		case ch == '{':
+			depth++
+		case ch == '}':
+			if depth == 0 {
+				return c.data[start:c.pos]
+			}
+			depth--
 		}
-
-		res, skip, err := p.resolveParameter(j, data[j+1:], true, lookupEnv)
-		if err != nil {
-			return "", err
-		}
-		out = append(out, res...)
-		j += skip
+		c.advance(1)
 	}
 
-	return string(out), nil
+	return c.data[start:c.pos]
 }
 
-func (p *parser) expandWord(characterStart int, w []byte, lookupEnv LookupEnvFunc) ([]byte, error) {
+func (p *parser) parseWord(c *cursor, lookupEnv LookupEnvFunc) ([]byte, error) {
 	if p.depth >= maxExpansionDepth {
-		return nil, p.newParserError(characterStart, "expansion nesting too deep")
+		return nil, p.newParserError(c.pos, "expansion nesting too deep")
 	}
 	p.depth++
 	defer func() { p.depth-- }()
 
-	out := make([]byte, 0, len(w))
-	for j := 0; j < len(w); {
-		switch w[j] {
+	out := make([]byte, 0, 16)
+	depth := 0
+
+	for !c.eof() {
+		switch ch := c.peek(); ch {
+		case '}':
+			if depth == 0 {
+				return out, nil
+			}
+			depth--
+			out = append(out, ch)
+			c.advance(1)
+		case '{':
+			depth++
+			out = append(out, ch)
+			c.advance(1)
 		case '\\':
-			j++
-			if j < len(w) {
-				out = append(out, w[j])
-				j++
+			c.advance(1)
+			if !c.eof() {
+				out = append(out, c.peek())
+				c.advance(1)
 			}
 		case '\'':
-			for j++; j < len(w) && w[j] != '\''; j++ {
-				out = append(out, w[j])
+			c.advance(1)
+			for !c.eof() && c.peek() != '\'' {
+				out = append(out, c.peek())
+				c.advance(1)
 			}
-			if j < len(w) {
-				j++
+			if !c.eof() {
+				c.advance(1)
 			}
 		case '"':
-			for j++; j < len(w) && w[j] != '"'; {
-				if w[j] == '\\' && j+1 < len(w) {
-					j++
-					switch w[j] {
+			c.advance(1)
+			for !c.eof() && c.peek() != '"' {
+				if c.peek() == '\\' {
+					c.advance(1)
+					if c.eof() {
+						out = append(out, '\\')
+						break
+					}
+					switch c.peek() {
 					case 'n':
 						out = append(out, '\n')
 					case 't':
 						out = append(out, '\t')
 					default:
-						out = append(out, w[j])
+						out = append(out, c.peek())
 					}
-					j++
+					c.advance(1)
 					continue
 				}
-
-				if w[j] == '$' {
-					res, skip, err := p.resolveParameter(characterStart+j, w[j+1:], false, lookupEnv)
+				if c.peek() == '$' {
+					res, err := p.expandDollar(c, false, lookupEnv)
 					if err != nil {
 						return nil, err
 					}
 					out = append(out, res...)
-					j += skip + 1
 					continue
 				}
-
-				out = append(out, w[j])
-				j++
+				out = append(out, c.peek())
+				c.advance(1)
 			}
-			if j < len(w) {
-				j++
+			if !c.eof() {
+				c.advance(1)
 			}
 		case '$':
-			res, skip, err := p.resolveParameter(characterStart+j, w[j+1:], true, lookupEnv)
+			res, err := p.expandDollar(c, true, lookupEnv)
 			if err != nil {
 				return nil, err
 			}
 			out = append(out, res...)
-			j += skip + 1
 		default:
-			out = append(out, w[j])
-			j++
+			out = append(out, ch)
+			c.advance(1)
 		}
 	}
+
 	return out, nil
 }
 
-func (p *parser) newParameterError(characterStart int, name []byte, wordOffset int, word []byte, lookupEnv LookupEnvFunc) error {
-	msg, err := p.expandWord(characterStart+wordOffset, word, lookupEnv)
-	if err != nil {
-		return err
+// expandString resolves $NAME and ${...} references in s. It backs Expand.
+func (p *parser) expandString(s string, lookupEnv LookupEnvFunc) (string, error) {
+	data := []byte(s)
+	out := make([]byte, 0, len(data))
+	c := &cursor{data: data}
+
+	for !c.eof() {
+		if c.peek() != '$' {
+			out = append(out, c.peek())
+			c.advance(1)
+			continue
+		}
+
+		res, err := p.expandDollar(c, true, lookupEnv)
+		if err != nil {
+			return "", err
+		}
+		out = append(out, res...)
 	}
-	if len(msg) == 0 {
-		return p.newParserError(characterStart, fmt.Sprintf("%s: parameter not set", name))
-	}
-	return p.newParserError(characterStart, fmt.Sprintf("%s: %s", name, msg))
+
+	return string(out), nil
 }
 
 func (p *parser) stripPrefix(value, rest []byte) ([]byte, error) {
@@ -863,27 +1006,7 @@ func (p *parser) stripSuffix(value, rest []byte) ([]byte, error) {
 	return value, nil
 }
 
-func (p *parser) replace(characterStart int, value, rest []byte, lookupEnv LookupEnvFunc) ([]byte, error) {
-	spec := rest[1:]
-	all := false
-	if len(spec) > 0 && spec[0] == '/' {
-		all = true
-		spec = spec[1:]
-	}
-
-	var anchor byte
-	if len(spec) > 0 && (spec[0] == '#' || spec[0] == '%') {
-		anchor = spec[0]
-		spec = spec[1:]
-	}
-
-	pattern, replacement := splitReplacement(spec)
-
-	replacement, err := p.expandWord(characterStart, replacement, lookupEnv)
-	if err != nil {
-		return nil, err
-	}
-
+func (p *parser) replace(value, pattern, replacement []byte, all bool, anchor byte) []byte {
 	out := make([]byte, 0, len(value))
 	offset := 0
 	for offset <= len(value) {
@@ -910,7 +1033,7 @@ func (p *parser) replace(characterStart int, value, rest []byte, lookupEnv Looku
 	}
 	out = append(out, value[offset:]...)
 
-	return out, nil
+	return out
 }
 
 func (p *parser) substring(characterStart int, value, spec []byte) ([]byte, error) {
@@ -988,19 +1111,6 @@ func parseIndex(spec []byte) (value int, rest []byte, ok bool) {
 	}
 
 	return n, spec[j:], true
-}
-
-func splitReplacement(spec []byte) (pattern, replacement []byte) {
-	for i := 0; i < len(spec); i++ {
-		if spec[i] == '\\' {
-			i++
-			continue
-		}
-		if spec[i] == '/' {
-			return spec[:i], spec[i+1:]
-		}
-	}
-	return spec, nil
 }
 
 func findMatch(pattern, str []byte, anchor byte) (start, end int, ok bool) {
@@ -1145,31 +1255,34 @@ func matchClass(pattern []byte, start int, c byte) (next int, matched, ok bool) 
 	return i + 1, matched != negate, true
 }
 
-// ansiCString decodes a bash `$'...'` ANSI-C quoted string beginning at s[0].
-func (p *parser) ansiCString(characterStart int, s []byte) ([]byte, int, error) {
-	out := make([]byte, 0, len(s))
+// parseAnsiC decodes a bash `$'...'` ANSI-C quoted string, with the cursor at
+// the opening quote.
+func (p *parser) parseAnsiC(c *cursor) ([]byte, error) {
+	quote := c.pos
+	out := make([]byte, 0, 16)
+	c.advance(1)
 
-	for i := 1; i < len(s); {
-		c := s[i]
-		switch {
-		case c == '\'':
-			return out, i + 1, nil
-		case c != '\\':
-			out = append(out, c)
-			i++
-		case i+1 >= len(s):
-			return nil, 0, p.newParserError(characterStart+i, "incomplete escape sequence")
+	for !c.eof() {
+		switch ch := c.peek(); {
+		case ch == '\'':
+			c.advance(1)
+			return out, nil
+		case ch != '\\':
+			out = append(out, ch)
+			c.advance(1)
+		case c.pos+1 >= len(c.data):
+			return nil, p.newParserError(c.pos, "incomplete escape sequence")
 		default:
-			decoded, width, err := decodeEscape(s, i+1)
+			decoded, width, err := decodeEscape(c.data, c.pos+1)
 			if err != nil {
-				return nil, 0, err
+				return nil, err
 			}
 			out = append(out, decoded...)
-			i += 1 + width
+			c.advance(1 + width)
 		}
 	}
 
-	return nil, 0, p.newParserError(characterStart, "unmatched single quote")
+	return nil, p.newParserError(quote, "unmatched single quote")
 }
 
 // decodeEscape decodes the escape body that follows a backslash at s[j].

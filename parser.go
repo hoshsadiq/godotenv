@@ -12,359 +12,400 @@ const (
 	maxExpansionDepth = 1000
 )
 
-type state uint8
-
-const (
-	stateKey state = iota
-	stateValue
-	stateEscapeNone
-	stateEscapeSingle
-	stateEscapeDouble
-	stateQuoteDouble
-	stateQuoteSingle
-)
-
 // LookupEnvFunc is used to determine the value of an environment, and whether it exists or not.
 // This should only look at the application environment and not at previous parsed items in a .env file.
 // Previously parsed items in an .env file take precedence over the environment.
 type LookupEnvFunc func(name []byte) (value []byte, exists bool)
 
 type parser struct {
-	data       []byte
-	lineNumber int
-	cfg        config
-	depth      int
+	data      []byte
+	cfg       config
+	depth     int
+	value     []byte
+	pendingWS []byte
 }
 
 func newParser(d []byte, cfg config) *parser {
 	return &parser{
-		data:       d,
-		lineNumber: 1,
-		cfg:        cfg,
+		data: d,
+		cfg:  cfg,
 	}
 }
 
-func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error) {
+type cursor struct {
+	data []byte
+	pos  int
+}
+
+func (c *cursor) eof() bool {
+	return c.pos >= len(c.data)
+}
+
+func (c *cursor) peek() byte {
+	if c.eof() {
+		return 0
+	}
+	return c.data[c.pos]
+}
+
+func (c *cursor) peekAt(offset int) byte {
+	if c.pos+offset >= len(c.data) {
+		return 0
+	}
+	return c.data[c.pos+offset]
+}
+
+func (c *cursor) advance(n int) {
+	c.pos += n
+	if c.pos > len(c.data) {
+		c.pos = len(c.data)
+	}
+}
+
+func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) error {
 	lineCap := longestLine(p.data)
 
 	key := make([]byte, 0, lineCap)
-	value := make([]byte, 0, lineCap)
-	pendingWS := make([]byte, 0, lineCap)
+	p.value = make([]byte, 0, lineCap)
+	p.pendingWS = make([]byte, 0, lineCap)
 
-	state := stateKey
-	valueStarted := false
+	c := &cursor{data: p.data}
 
-	startValue := func(j int) error {
-		if !valueStarted && len(pendingWS) > 0 {
-			return p.newParserError(j-len(pendingWS), "unexpected space in value")
+	for !c.eof() {
+		p.skipBlankAndComments(c)
+		if c.eof() {
+			break
 		}
 
-		valueStarted = true
-
-		return nil
-	}
-
-	var j int
-
-	for j = 0; j < len(p.data); j++ {
-		c := p.data[j]
-
-		switch state {
-		case stateKey:
-			switch {
-			case c == '=':
-				if len(key) == 0 {
-					return p.newParserError(j, "empty key")
-				}
-
-				state = stateValue
-			case c == '#':
-				if j == 0 || isSpace(p.data[j-1]) {
-					nl := bytes.IndexByte(p.data[j+1:], '\n')
-					if nl < 0 {
-						j = len(p.data)
-						continue
-					}
-
-					j += nl
-					continue
-				}
-
-				return p.newParserError(j, "not a valid identifier")
-			case c == ' ', c == '\t', c == '\r', c == '\n':
-				if bytes.Equal(key, []byte(exportPrefix)) {
-					key = key[:0]
-				}
-
-				if c == '\n' {
-					p.lineNumber++
-				}
-
-				// ignore empty space
-				if len(key) == 0 {
-					continue
-				}
-
-				return p.newParserError(j, "unexpected whitespace in key")
-			case isNum(c):
-				if len(key) == 0 {
-					return p.newParserError(j, "invalid character in key name")
-				}
-				fallthrough
-			case c == '_':
-				fallthrough
-			case isAlpha(c):
-				key = append(key, c)
-			default:
-				return p.newParserError(j, "invalid character in key name")
-			}
-		case stateValue:
-			switch c {
-			case '\r':
-				// ignore `\r` in an `\r\n`, but not in only `\r`
-				if j+1 < len(p.data) && p.data[j+1] == '\n' {
-					continue
-				}
-
-				if err := startValue(j); err != nil {
-					return err
-				}
-
-				value = flushPendingWS(value, pendingWS)
-				pendingWS = pendingWS[:0]
-				value = append(value, c)
-			case '\n':
-				p.lineNumber++
-
-				m[string(key)] = string(value)
-				key = key[:0]
-				value = value[:0]
-				pendingWS = pendingWS[:0]
-				valueStarted = false
-				state = stateKey
-			case '\\':
-				if err := startValue(j); err != nil {
-					return err
-				}
-
-				value = flushPendingWS(value, pendingWS)
-				pendingWS = pendingWS[:0]
-				state = stateEscapeNone
-			case '\'':
-				if err := startValue(j); err != nil {
-					return err
-				}
-
-				value = flushPendingWS(value, pendingWS)
-				pendingWS = pendingWS[:0]
-				state = stateQuoteSingle
-			case '"':
-				if err := startValue(j); err != nil {
-					return err
-				}
-
-				value = flushPendingWS(value, pendingWS)
-				pendingWS = pendingWS[:0]
-				state = stateQuoteDouble
-			case '#':
-				if isSpace(p.data[j-1]) {
-					nl := bytes.IndexByte(p.data[j+1:], '\n')
-					if nl < 0 {
-						j = len(p.data)
-						continue
-					}
-
-					j += nl
-					continue
-				}
-
-				if err := startValue(j); err != nil {
-					return err
-				}
-
-				value = append(value, c)
-			case '$':
-				if err := startValue(j); err != nil {
-					return err
-				}
-
-				value = flushPendingWS(value, pendingWS)
-				pendingWS = pendingWS[:0]
-				res, w, err := p.resolveParameter(j, p.data[j+1:], true, lookupEnv)
-				if err != nil {
-					return err
-				}
-				value = append(value, res...)
-				j += w
-			case ' ', '\t':
-				pendingWS = append(pendingWS, c)
-			default:
-				if c < 32 {
-					return p.newInvalidCharacterError(j, c)
-				}
-
-				if err := startValue(j); err != nil {
-					return err
-				}
-
-				value = flushPendingWS(value, pendingWS)
-				pendingWS = pendingWS[:0]
-				value = append(value, c)
-			}
-		case stateEscapeNone:
-			if c == '\r' && j+1 < len(p.data) && p.data[j+1] == '\n' {
-				p.lineNumber++
-				j++
-				state = stateValue
-				continue
-			}
-
-			if c == '\n' {
-				p.lineNumber++
-				state = stateValue
-				continue
-			}
-
-			value = append(value, c)
-			state = stateValue
-		case stateQuoteDouble:
-			switch c {
-			case '$':
-				res, w, err := p.resolveParameter(j, p.data[j+1:], false, lookupEnv)
-				if err != nil {
-					return err
-				}
-				value = append(value, res...)
-				j += w
-			case '"':
-				state = stateValue
-			case '\\':
-				if p.cfg.posix {
-					if j+1 >= len(p.data) {
-						return p.newParserError(j, "incomplete escape sequence")
-					}
-					switch next := p.data[j+1]; next {
-					case '$', '`', '"', '\\':
-						value = append(value, next)
-						j++
-					case '\n':
-						p.lineNumber++
-						j++
-					default:
-						value = append(value, '\\')
-					}
-				} else {
-					state = stateEscapeDouble
-				}
-			case '\n':
-				p.lineNumber++
-				fallthrough
-			default:
-				value = append(value, c)
-			}
-		case stateEscapeDouble:
-			if c == '\r' && j+1 < len(p.data) && p.data[j+1] == '\n' {
-				p.lineNumber++
-				j++
-				state = stateQuoteDouble
-				continue
-			}
-
-			if c == '\n' {
-				p.lineNumber++
-				state = stateQuoteDouble
-				continue
-			}
-
-			// todo how can we combine some of these cases?
-			switch c {
-			case 'b':
-				value = append(value, '\b')
-			case 'f':
-				value = append(value, '\f')
-			case 'r':
-				value = append(value, '\r')
-			case 'n':
-				value = append(value, '\n')
-			case 't':
-				value = append(value, '\t')
-			case 'u':
-				decoded, width := decodeUnicodeEscape(p.data, j)
-				value = append(value, decoded...)
-				j += width
-			case 'x':
-				decoded, width, err := decodeHexEscape(p.data, j, 2, false)
-				if err != nil {
-					return err
-				}
-				value = append(value, decoded...)
-				j += width - 1
-			case 'U':
-				decoded, width, err := decodeHexEscape(p.data, j, 8, true)
-				if err != nil {
-					return err
-				}
-				value = append(value, decoded...)
-				j += width - 1
-			default:
-				value = append(value, c)
-			}
-
-			state = stateQuoteDouble
-		case stateQuoteSingle:
-			switch c {
-			case '\'':
-				state = stateValue
-			case '\\':
-				if p.cfg.posix {
-					value = append(value, '\\')
-				} else {
-					state = stateEscapeSingle
-				}
-			case '\n':
-				p.lineNumber++
-				fallthrough
-			default:
-				value = append(value, c)
-			}
-		case stateEscapeSingle:
-			value = append(value, '\\', c)
-			state = stateQuoteSingle
-		default:
-			panic(fmt.Errorf("state is invalid: %v. THIS IS A BUG", state))
+		var err error
+		if key, err = p.parseKey(c, key[:0]); err != nil {
+			return err
 		}
-	}
-
-	if state == stateValue {
-		m[string(key)] = string(value)
-		key = key[:0]
-		// value = value[:0]
-	}
-
-	switch state {
-	case stateValue:
-	case stateKey:
-		if len(key) != 0 {
-			return p.newParserError(j, "missing value operator")
+		if len(key) == 0 {
+			continue
 		}
-	case stateQuoteDouble:
-		return p.newParserError(j, "unmatched double quote")
-	case stateQuoteSingle:
-		return p.newParserError(j, "unmatched single quote")
-	case stateEscapeNone, stateEscapeDouble, stateEscapeSingle: // todo this can be resolved by dealing with the whole input instead of line by line
-		return p.newParserError(j, "incomplete escape sequence")
-	default:
-		panic(fmt.Errorf("state is invalid: %v. THIS IS A BUG", state))
+
+		if c.eof() || c.peek() != '=' {
+			return p.newParserError(c.pos, "missing value operator")
+		}
+		c.advance(1)
+
+		if err = p.parseValue(c, lookupEnv); err != nil {
+			return err
+		}
+
+		m[string(key)] = string(p.value)
 	}
 
 	return nil
 }
 
-func flushPendingWS(value, pending []byte) []byte {
-	if len(pending) == 0 {
-		return value
+func (p *parser) skipBlankAndComments(c *cursor) {
+	for !c.eof() {
+		switch c.peek() {
+		case ' ', '\t', '\r', '\n':
+			c.advance(1)
+		case '#':
+			for !c.eof() && c.peek() != '\n' {
+				c.advance(1)
+			}
+		default:
+			return
+		}
 	}
-	return append(value, pending...)
+}
+
+func (p *parser) parseKey(c *cursor, key []byte) ([]byte, error) {
+	switch ch := c.peek(); {
+	case ch == '=':
+		return nil, p.newParserError(c.pos, "empty key")
+	case !isAlpha(ch) && ch != '_':
+		return nil, p.newParserError(c.pos, "invalid character in key name")
+	}
+
+	for !c.eof() && isAlphaNum(c.peek()) {
+		key = append(key, c.peek())
+		c.advance(1)
+	}
+
+	if c.eof() {
+		return key, nil
+	}
+
+	switch ch := c.peek(); ch {
+	case '=':
+		return key, nil
+	case ' ', '\t', '\r', '\n':
+		if bytes.Equal(key, []byte(exportPrefix)) {
+			return key[:0], nil
+		}
+		return nil, p.newParserError(c.pos, "unexpected whitespace in key")
+	case '#':
+		return nil, p.newParserError(c.pos, "not a valid identifier")
+	default:
+		return nil, p.newParserError(c.pos, "invalid character in key name")
+	}
+}
+
+func (p *parser) parseValue(c *cursor, lookupEnv LookupEnvFunc) error {
+	p.value = p.value[:0]
+	p.pendingWS = p.pendingWS[:0]
+
+	started := false
+	startValue := func(pos int) error {
+		if !started && len(p.pendingWS) > 0 {
+			return p.newParserError(pos-len(p.pendingWS), "unexpected space in value")
+		}
+
+		started = true
+
+		return nil
+	}
+
+	for !c.eof() {
+		switch ch := c.peek(); ch {
+		case '\r':
+			// ignore `\r` in an `\r\n`, but not in only `\r`
+			if c.peekAt(1) == '\n' {
+				c.advance(1)
+				continue
+			}
+
+			if err := startValue(c.pos); err != nil {
+				return err
+			}
+
+			p.flushPending()
+			p.value = append(p.value, ch)
+			c.advance(1)
+		case '\n':
+			c.advance(1)
+			return nil
+		case '\\':
+			if err := startValue(c.pos); err != nil {
+				return err
+			}
+
+			p.flushPending()
+			c.advance(1)
+			if c.eof() {
+				return p.newParserError(c.pos, "incomplete escape sequence")
+			}
+			if c.peek() == '\r' && c.peekAt(1) == '\n' {
+				c.advance(2)
+				continue
+			}
+			if c.peek() == '\n' {
+				c.advance(1)
+				continue
+			}
+
+			p.value = append(p.value, c.peek())
+			c.advance(1)
+		case '\'':
+			if err := startValue(c.pos); err != nil {
+				return err
+			}
+
+			p.flushPending()
+			if err := p.parseSingleQuoted(c); err != nil {
+				return err
+			}
+		case '"':
+			if err := startValue(c.pos); err != nil {
+				return err
+			}
+
+			p.flushPending()
+			if err := p.parseDoubleQuoted(c, lookupEnv); err != nil {
+				return err
+			}
+		case '#':
+			if isSpace(c.data[c.pos-1]) {
+				for !c.eof() && c.peek() != '\n' {
+					c.advance(1)
+				}
+				continue
+			}
+
+			if err := startValue(c.pos); err != nil {
+				return err
+			}
+
+			p.value = append(p.value, ch)
+			c.advance(1)
+		case '$':
+			if err := startValue(c.pos); err != nil {
+				return err
+			}
+
+			p.flushPending()
+			res, skip, err := p.resolveParameter(c.pos, c.data[c.pos+1:], true, lookupEnv)
+			if err != nil {
+				return err
+			}
+
+			p.value = append(p.value, res...)
+			c.advance(1 + skip)
+		case ' ', '\t':
+			p.pendingWS = append(p.pendingWS, ch)
+			c.advance(1)
+		default:
+			if ch < 32 {
+				return p.newInvalidCharacterError(c.pos, ch)
+			}
+
+			if err := startValue(c.pos); err != nil {
+				return err
+			}
+
+			p.flushPending()
+			p.value = append(p.value, ch)
+			c.advance(1)
+		}
+	}
+
+	return nil
+}
+
+func (p *parser) flushPending() {
+	p.value = append(p.value, p.pendingWS...)
+	p.pendingWS = p.pendingWS[:0]
+}
+
+func (p *parser) parseSingleQuoted(c *cursor) error {
+	c.advance(1)
+
+	for !c.eof() {
+		switch ch := c.peek(); ch {
+		case '\'':
+			c.advance(1)
+			return nil
+		case '\\':
+			p.value = append(p.value, '\\')
+			c.advance(1)
+			if p.cfg.posix {
+				continue
+			}
+			if c.eof() {
+				return p.newParserError(c.pos, "incomplete escape sequence")
+			}
+
+			p.value = append(p.value, c.peek())
+			c.advance(1)
+		default:
+			p.value = append(p.value, ch)
+			c.advance(1)
+		}
+	}
+
+	return p.newParserError(c.pos, "unmatched single quote")
+}
+
+func (p *parser) parseDoubleQuoted(c *cursor, lookupEnv LookupEnvFunc) error {
+	c.advance(1)
+
+	for !c.eof() {
+		switch ch := c.peek(); ch {
+		case '"':
+			c.advance(1)
+			return nil
+		case '$':
+			res, skip, err := p.resolveParameter(c.pos, c.data[c.pos+1:], false, lookupEnv)
+			if err != nil {
+				return err
+			}
+
+			p.value = append(p.value, res...)
+			c.advance(1 + skip)
+		case '\\':
+			if !p.cfg.posix {
+				if err := p.parseDoubleQuoteEscape(c); err != nil {
+					return err
+				}
+				continue
+			}
+
+			if c.pos+1 >= len(c.data) {
+				return p.newParserError(c.pos, "incomplete escape sequence")
+			}
+
+			c.advance(1)
+			switch next := c.peek(); next {
+			case '$', '`', '"', '\\':
+				p.value = append(p.value, next)
+				c.advance(1)
+			case '\n':
+				c.advance(1)
+			default:
+				p.value = append(p.value, '\\')
+			}
+		default:
+			p.value = append(p.value, ch)
+			c.advance(1)
+		}
+	}
+
+	return p.newParserError(c.pos, "unmatched double quote")
+}
+
+func (p *parser) parseDoubleQuoteEscape(c *cursor) error {
+	c.advance(1)
+
+	if c.eof() {
+		return p.newParserError(c.pos, "incomplete escape sequence")
+	}
+
+	ch := c.peek()
+	if ch == '\r' && c.peekAt(1) == '\n' {
+		c.advance(2)
+		return nil
+	}
+	if ch == '\n' {
+		c.advance(1)
+		return nil
+	}
+
+	switch ch {
+	case 'b':
+		p.value = append(p.value, '\b')
+		c.advance(1)
+	case 'f':
+		p.value = append(p.value, '\f')
+		c.advance(1)
+	case 'r':
+		p.value = append(p.value, '\r')
+		c.advance(1)
+	case 'n':
+		p.value = append(p.value, '\n')
+		c.advance(1)
+	case 't':
+		p.value = append(p.value, '\t')
+		c.advance(1)
+	case 'u':
+		decoded, width := decodeUnicodeEscape(p.data, c.pos)
+		p.value = append(p.value, decoded...)
+		c.advance(1 + width)
+	case 'x':
+		decoded, width, err := decodeHexEscape(p.data, c.pos, 2, false)
+		if err != nil {
+			return err
+		}
+		p.value = append(p.value, decoded...)
+		c.advance(width)
+	case 'U':
+		decoded, width, err := decodeHexEscape(p.data, c.pos, 8, true)
+		if err != nil {
+			return err
+		}
+		p.value = append(p.value, decoded...)
+		c.advance(width)
+	default:
+		p.value = append(p.value, ch)
+		c.advance(1)
+	}
+
+	return nil
 }
 
 // longestLine returns the length of the longest line in data, without its

@@ -242,6 +242,22 @@ env, err := godotenv.Unmarshal("KEY=value")
 content, err := godotenv.Marshal(env)
 ```
 
+## Development
+
+Tools are pinned with [mise](https://mise.jdx.dev/) and the git hooks run through [prek](https://prek.j178.dev/):
+
+```bash
+mise install
+mise run precommit:install
+```
+
+Useful tasks:
+
+- `mise run test`: `go test -race -cover ./...`
+- `mise run check`: gofumpt, goimports, golangci-lint and go vet
+- `mise run precommit`: run every prek hook
+- `mise run release:dry`: build a GoReleaser snapshot
+
 ## Contributing
 
 Contributions are most welcome! The parser itself is pretty stupidly naive and I wouldn't be surprised if it breaks with edge cases.

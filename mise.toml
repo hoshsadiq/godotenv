@@ -1,6 +1,10 @@
 [tools]
 go = "1.27"
+"github:gitleaks/gitleaks" = "v8.30.1"
+"github:gotestyourself/gotestsum" = "v1.13.0"
+"github:hadolint/hadolint" = "v2.15.1"
 "github:j178/prek" = "v0.5.1"
+"github:securego/gosec" = "v2.29.0"
 "github:golangci/golangci-lint" = "v2.13.2"
 "github:mvdan/gofumpt" = "v0.11.0"
 "github:goreleaser/goreleaser" = "v2.18.0"

@@ -1,0 +1,142 @@
+# Configuration file for `prek`, a git hook framework written in Rust.
+# See https://prek.j178.dev for more information.
+#:schema https://www.schemastore.org/prek.json
+
+default_language_version = { python = "python3" }
+default_stages = ["pre-commit"]
+
+[[repos]]
+repo = "https://github.com/pre-commit/pre-commit-hooks"
+rev = "v5.0.0"
+hooks = [
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
+  {
+    id = "check-yaml",
+    args = ["--allow-multiple-documents"]
+  },
+  { id = "check-json" },
+  { id = "check-toml" },
+  { id = "check-merge-conflict" },
+  {
+    id = "check-added-large-files",
+    args = ["--maxkb=500"]
+  },
+  { id = "check-executables-have-shebangs" },
+  { id = "check-shebang-scripts-are-executable" },
+  {
+    id = "mixed-line-ending",
+    args = ["--fix=lf"]
+  }
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "gofumpt",
+    name = "gofumpt",
+    entry = "mise x -- gofumpt -l -w",
+    language = "system",
+    types = ["go"]
+  },
+  {
+    id = "goimports",
+    name = "goimports",
+    entry = "mise x -- goimports -w -local github.com/hoshsadiq/godotenv",
+    language = "system",
+    types = ["go"]
+  },
+  {
+    id = "go-mod-tidy",
+    name = "go mod tidy",
+    entry = "bash -c 'mise x -- go mod tidy && git diff --exit-code go.mod go.sum'",
+    language = "system",
+    files = '^(go\.mod|go\.sum)$',
+    pass_filenames = false
+  },
+  {
+    id = "golangci-lint",
+    name = "golangci-lint",
+    entry = "mise x -- golangci-lint run --fix",
+    language = "system",
+    types = ["go"],
+    pass_filenames = false
+  },
+  {
+    id = "go-vet",
+    name = "go vet",
+    entry = "bash -c 'mise x -- go vet ./...'",
+    language = "system",
+    types = ["go"],
+    pass_filenames = false
+  },
+  {
+    id = "go-test",
+    name = "go test (short, race)",
+    entry = "mise x -- gotestsum -- -short -race ./...",
+    language = "system",
+    types = ["go"],
+    pass_filenames = false,
+    stages = ["pre-push"]
+  }
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "gitleaks",
+    name = "gitleaks",
+    entry = "mise x -- gitleaks protect --staged --redact --config .gitleaks.toml",
+    language = "system",
+    pass_filenames = false
+  },
+  {
+    id = "gosec",
+    name = "gosec",
+    entry = "mise x -- gosec -quiet -exclude-dir=dist ./...",
+    language = "system",
+    types = ["go"],
+    pass_filenames = false,
+    stages = ["pre-push"]
+  },
+  {
+    id = "actionlint",
+    name = "actionlint",
+    entry = "mise x -- actionlint",
+    language = "system",
+    types = ["yaml"],
+    files = '^\.github/workflows/',
+    pass_filenames = true
+  },
+  {
+    id = "shellcheck",
+    name = "shellcheck",
+    entry = "mise x -- shellcheck",
+    language = "system",
+    types = ["shell"],
+    pass_filenames = true
+  },
+  {
+    id = "hadolint",
+    name = "hadolint",
+    entry = "mise x -- hadolint",
+    language = "system",
+    files = '(^|/)Dockerfile(\.[a-zA-Z0-9_.-]+)?$',
+    pass_filenames = true
+  }
+]
+
+[[repos]]
+repo = "https://github.com/adrienverge/yamllint"
+rev = "v1.38.0"
+hooks = [
+  {
+    id = "yamllint",
+    args = [
+      "-d",
+      "relaxed"
+    ]
+  }
+]

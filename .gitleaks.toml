@@ -1,0 +1,16 @@
+title = "godotenv gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "godotenv allowlist"
+paths = [
+  '''(^|/)dist/''',
+  '''(^|/)coverage\.(out|html)$''',
+  '''(^|/)go\.sum$''',
+  '''(^|/)fixtures/''',
+  '''(^|/)README\.md$''',
+  '''(^|/)CHANGELOG\.md$''',
+]
+stopwords = ["EXAMPLE", "SAMPLE", "PLACEHOLDER"]

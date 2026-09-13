@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"strconv"
-	"unicode"
 )
 
 const (
@@ -48,6 +47,17 @@ func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error)
 	pendingWS := make([]byte, 0, len(p.data))
 
 	state := stateKey
+	valueStarted := false
+
+	startValue := func(j int) error {
+		if !valueStarted && len(pendingWS) > 0 {
+			return p.newParserError(j-len(pendingWS), "unexpected space in value")
+		}
+
+		valueStarted = true
+
+		return nil
+	}
 
 	var j int
 
@@ -64,7 +74,7 @@ func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error)
 
 				state = stateValue
 			case c == '#':
-				if j == 0 || unicode.IsSpace(rune(p.data[j-1])) {
+				if j == 0 || isSpace(p.data[j-1]) {
 					nl := bytes.IndexByte(p.data[j+1:], '\n')
 					if nl < 0 {
 						j = len(p.data)
@@ -91,14 +101,14 @@ func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error)
 				}
 
 				return p.newParserError(j, "unexpected whitespace in key")
-			case unicode.IsNumber(rune(c)):
+			case isNum(c):
 				if len(key) == 0 {
 					return p.newParserError(j, "invalid character in key name")
 				}
 				fallthrough
 			case c == '_':
 				fallthrough
-			case unicode.IsLetter(rune(c)):
+			case isAlpha(c):
 				key = append(key, c)
 			default:
 				return p.newParserError(j, "invalid character in key name")
@@ -107,11 +117,17 @@ func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error)
 			switch c {
 			case '\r':
 				// ignore `\r` in an `\r\n`, but not in only `\r`
-				if len(p.data) >= j+1 && p.data[j+1] == '\n' {
+				if j+1 < len(p.data) && p.data[j+1] == '\n' {
 					continue
 				}
 
-				fallthrough
+				if err := startValue(j); err != nil {
+					return err
+				}
+
+				value = flushPendingWS(value, pendingWS)
+				pendingWS = pendingWS[:0]
+				value = append(value, c)
 			case '\n':
 				p.lineNumber++
 
@@ -119,21 +135,34 @@ func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error)
 				key = key[:0]
 				value = value[:0]
 				pendingWS = pendingWS[:0]
+				valueStarted = false
 				state = stateKey
 			case '\\':
+				if err := startValue(j); err != nil {
+					return err
+				}
+
 				value = flushPendingWS(value, pendingWS)
 				pendingWS = pendingWS[:0]
 				state = stateEscapeNone
 			case '\'':
+				if err := startValue(j); err != nil {
+					return err
+				}
+
 				value = flushPendingWS(value, pendingWS)
 				pendingWS = pendingWS[:0]
 				state = stateQuoteSingle
 			case '"':
+				if err := startValue(j); err != nil {
+					return err
+				}
+
 				value = flushPendingWS(value, pendingWS)
 				pendingWS = pendingWS[:0]
 				state = stateQuoteDouble
 			case '#':
-				if unicode.IsSpace(rune(p.data[j-1])) {
+				if isSpace(p.data[j-1]) {
 					nl := bytes.IndexByte(p.data[j+1:], '\n')
 					if nl < 0 {
 						j = len(p.data)
@@ -144,8 +173,16 @@ func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error)
 					continue
 				}
 
+				if err := startValue(j); err != nil {
+					return err
+				}
+
 				value = append(value, c)
 			case '$':
+				if err := startValue(j); err != nil {
+					return err
+				}
+
 				value = flushPendingWS(value, pendingWS)
 				pendingWS = pendingWS[:0]
 				res, w, err := p.resolveParameter(j, p.data[j+1:], true, lookupEnv)
@@ -155,14 +192,14 @@ func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error)
 				value = append(value, res...)
 				j += w
 			case ' ', '\t':
-				if len(value) == 0 {
-					return p.newParserError(j, "unexpected space in value")
-				}
-
 				pendingWS = append(pendingWS, c)
 			default:
 				if c < 32 {
 					return p.newInvalidCharacterError(j, c)
+				}
+
+				if err := startValue(j); err != nil {
+					return err
 				}
 
 				value = flushPendingWS(value, pendingWS)
@@ -311,6 +348,10 @@ func flushPendingWS(value, pending []byte) []byte {
 	return append(value, pending...)
 }
 
+func isSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
 // isShellSpecialVar reports whether the character identifies a special
 // shell variable such as $*.
 func isShellSpecialVar(c uint8) bool {
@@ -350,12 +391,40 @@ func (p *parser) resolveParameter(characterStart int, s []byte, allowANSI bool, 
 	case p.cfg.restricted:
 		return p.resolveName(characterStart, s, lookupEnv)
 	case s[0] == '(':
-		// Command substitution is never executed. Preserve `$(...)` verbatim
-		for i := 1; i < len(s) && s[i] != '\n'; i++ {
-			if s[i] == ')' {
-				return append([]byte("$"), s[:i+1]...), i + 1, nil
+		// Command substitution is never executed. Preserve `$(...)` verbatim,
+		// taking nested parentheses and quoted strings into account.
+		depth := 0
+		var quote byte
+
+		for i := 0; i < len(s); i++ {
+			switch c := s[i]; {
+			case c == '\n':
+				return []byte("$"), 0, nil
+			case quote == '\'':
+				if c == '\'' {
+					quote = 0
+				}
+			case quote == '"':
+				switch c {
+				case '\\':
+					i++
+				case '"':
+					quote = 0
+				}
+			case c == '\'' || c == '"':
+				quote = c
+			case c == '\\':
+				i++
+			case c == '(':
+				depth++
+			case c == ')':
+				depth--
+				if depth == 0 {
+					return append([]byte("$"), s[:i+1]...), i + 1, nil
+				}
 			}
 		}
+
 		return []byte("$"), 0, nil
 	case allowANSI && s[0] == '\'':
 		return p.ansiCString(characterStart, s)
@@ -401,22 +470,39 @@ func (p *parser) resolveName(characterStart int, s []byte, lookupEnv LookupEnvFu
 }
 
 // matchBrace returns the index of the '}' closing the '{' at s[0], or -1 if the
-// brace is never closed. Nested `${...}` are taken into account.
+// brace is never closed. Nested `${...}` and quoted strings are taken into
+// account.
 func matchBrace(s []byte) int {
 	depth := 0
+	var quote byte
+
 	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '\\':
+		switch c := s[i]; {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			}
+		case quote == '"':
+			switch c {
+			case '\\':
+				i++
+			case '"':
+				quote = 0
+			}
+		case c == '\'' || c == '"':
+			quote = c
+		case c == '\\':
 			i++
-		case '{':
+		case c == '{':
 			depth++
-		case '}':
+		case c == '}':
 			depth--
 			if depth == 0 {
 				return i
 			}
 		}
 	}
+
 	return -1
 }
 
@@ -426,7 +512,18 @@ func (p *parser) expandBraced(characterStart int, inner []byte, lookupEnv Lookup
 	}
 
 	if inner[0] == '#' && len(inner) > 1 {
-		v, _ := lookupEnv(inner[1:])
+		name := inner[1:]
+
+		var i int
+		if isAlpha(name[0]) || name[0] == '_' {
+			for i = 1; i < len(name) && isAlphaNum(name[i]); i++ {
+			}
+		}
+		if i == 0 || i != len(name) {
+			return nil, p.newParserError(characterStart, "bad substitution")
+		}
+
+		v, _ := lookupEnv(name)
 		return []byte(strconv.Itoa(len(v))), nil
 	}
 
@@ -530,12 +627,52 @@ func (p *parser) expandString(s string, lookupEnv LookupEnvFunc) (string, error)
 
 func (p *parser) expandWord(characterStart int, w []byte, lookupEnv LookupEnvFunc) ([]byte, error) {
 	out := make([]byte, 0, len(w))
-	for j := 0; j < len(w); j++ {
+	for j := 0; j < len(w); {
 		switch w[j] {
 		case '\\':
-			if j+1 < len(w) {
-				j++
+			j++
+			if j < len(w) {
 				out = append(out, w[j])
+				j++
+			}
+		case '\'':
+			for j++; j < len(w) && w[j] != '\''; j++ {
+				out = append(out, w[j])
+			}
+			if j < len(w) {
+				j++
+			}
+		case '"':
+			for j++; j < len(w) && w[j] != '"'; {
+				if w[j] == '\\' && j+1 < len(w) {
+					j++
+					switch w[j] {
+					case 'n':
+						out = append(out, '\n')
+					case 't':
+						out = append(out, '\t')
+					default:
+						out = append(out, w[j])
+					}
+					j++
+					continue
+				}
+
+				if w[j] == '$' {
+					res, skip, err := p.resolveParameter(characterStart+j, w[j+1:], false, lookupEnv)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, res...)
+					j += skip + 1
+					continue
+				}
+
+				out = append(out, w[j])
+				j++
+			}
+			if j < len(w) {
+				j++
 			}
 		case '$':
 			res, skip, err := p.resolveParameter(characterStart+j, w[j+1:], true, lookupEnv)
@@ -543,9 +680,10 @@ func (p *parser) expandWord(characterStart int, w []byte, lookupEnv LookupEnvFun
 				return nil, err
 			}
 			out = append(out, res...)
-			j += skip
+			j += skip + 1
 		default:
 			out = append(out, w[j])
+			j++
 		}
 	}
 	return out, nil
@@ -693,9 +831,10 @@ func (p *parser) substring(characterStart int, value, spec []byte) ([]byte, erro
 		return nil, p.newParserError(characterStart, "bad substitution: invalid substring length")
 	}
 	if end >= 0 {
-		end += begin
-		if end > length {
+		if end > length-begin {
 			end = length
+		} else {
+			end += begin
 		}
 	} else {
 		end += length
@@ -806,10 +945,13 @@ func matchGlob(pattern, s []byte) bool {
 			pi++
 			si++
 		case pi < len(pattern) && pattern[pi] == '[':
-			next, matched := matchClass(pattern, pi, s[si])
+			next, matched, ok := matchClass(pattern, pi, s[si])
 			switch {
-			case matched:
+			case ok && matched:
 				pi = next
+				si++
+			case !ok && s[si] == '[':
+				pi++
 				si++
 			case star >= 0:
 				pi = star + 1
@@ -838,7 +980,7 @@ func matchGlob(pattern, s []byte) bool {
 	return pi == len(pattern)
 }
 
-func matchClass(pattern []byte, start int, c byte) (int, bool) {
+func matchClass(pattern []byte, start int, c byte) (next int, matched, ok bool) {
 	i := start + 1
 	negate := false
 	if i < len(pattern) && (pattern[i] == '^' || pattern[i] == '!') {
@@ -846,7 +988,7 @@ func matchClass(pattern []byte, start int, c byte) (int, bool) {
 		i++
 	}
 
-	matched := false
+	matched = false
 	first := true
 	for i < len(pattern) && (pattern[i] != ']' || first) {
 		first = false
@@ -864,10 +1006,10 @@ func matchClass(pattern []byte, start int, c byte) (int, bool) {
 	}
 
 	if i >= len(pattern) {
-		return len(pattern), false
+		return 0, false, false
 	}
 
-	return i + 1, matched != negate
+	return i + 1, matched != negate, true
 }
 
 // ansiCString decodes a bash `$'...'` ANSI-C quoted string beginning at s[0].

@@ -7,25 +7,32 @@ import (
 )
 
 type parserError struct {
-	lineNumber      int
-	characterNumber int
+	lineNumber int
+	column     int
 
 	line    []byte
 	message string
 }
 
 func (p parserError) Error() string {
-	return fmt.Sprintf("godotenv: %s on line %d\n\t%s\n\t%s%s", p.message, p.lineNumber, p.line, strings.Repeat(" ", p.characterNumber-1), "^ Right here")
+	return fmt.Sprintf("godotenv: %s on line %d\n\t%s\n\t%s%s", p.message, p.lineNumber, p.line, strings.Repeat(" ", p.column-1), "^ Right here")
 }
 
 func (p *parser) newParserError(characterNumber int, message string) parserError {
-	// this is not ideal, but it's only on error, so should be okay, maybe?
-	line := bytes.SplitN(p.data, []byte("\n"), p.lineNumber+1)[p.lineNumber-1]
+	position := min(max(characterNumber, 0), len(p.data))
+
+	lineStart := bytes.LastIndexByte(p.data[:position], '\n') + 1
+	line := p.data[lineStart:]
+	if end := bytes.IndexByte(line, '\n'); end >= 0 {
+		line = line[:end]
+	}
+	line = bytes.TrimSuffix(line, []byte("\r"))
+
 	return parserError{
-		lineNumber:      p.lineNumber,
-		characterNumber: characterNumber,
-		line:            line,
-		message:         message,
+		lineNumber: bytes.Count(p.data[:lineStart], []byte("\n")) + 1,
+		column:     position - lineStart + 1,
+		line:       line,
+		message:    message,
 	}
 }
 

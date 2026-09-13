@@ -530,6 +530,89 @@ func TestParsing(t *testing.T) {
 	}
 }
 
+func TestCommandSubstitution(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"nested substitution", `FOO=$(echo "$(date)")`, `$(echo "$(date)")`},
+		{"parenthesis inside quotes", `FOO=$(echo ")")`, `$(echo ")")`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
+func TestKeyValidation(t *testing.T) {
+	t.Parallel()
+
+	for _, input := range []string{"F\u00aa=1", "F\u00bd=1", "F\u00d6=1", "F\u00e9=1"} {
+		t.Run(input, func(t *testing.T) {
+			t.Parallel()
+
+			env, err := godotenv.Unmarshal(input)
+			if err == nil {
+				t.Errorf("expected %q to be rejected, got %v", input, env)
+			}
+		})
+	}
+}
+
+func TestValueWhitespace(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"no indentation before a value", "FOO= bar", "", true},
+		{"whitespace-only value is empty", "FOO= ", "", false},
+		{"trailing whitespace after unquoted value", "FOO=bar ", "bar", false},
+		{"comment after whitespace is dropped", "FOO=bar # comment", "bar", false},
+		{"trailing whitespace after an empty double quoted value", `FOO="" `, "", false},
+		{"trailing whitespace after an empty single quoted value", `FOO='' `, "", false},
+		{"trailing whitespace after an empty expansion", "FOO=$GODOTENV_TEST_UNSET_VARIABLE ", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.ParseWithLookup(strings.NewReader(tt.input), func([]byte) ([]byte, bool) {
+				return nil, false
+			})
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
 func TestCommentFirstLineAndEOF(t *testing.T) {
 	t.Parallel()
 
@@ -695,6 +778,26 @@ func TestParameterExpansion(t *testing.T) {
 	}
 }
 
+func TestQuotedCloseBraceInExpansion(t *testing.T) {
+	t.Parallel()
+
+	got, err := godotenv.Unmarshal(`FOO=${GODOTENV_TEST_UNSET_VARIABLE:-"}"}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "}"; got["FOO"] != want {
+		t.Errorf("expected %q, got %q", want, got["FOO"])
+	}
+}
+
+func TestLengthOperatorWithModifierErrors(t *testing.T) {
+	t.Parallel()
+
+	if _, err := godotenv.Unmarshal(`FOO=${#GODOTENV_TEST_UNSET_VARIABLE:-xyz}`); err == nil {
+		t.Fatal("expected an error")
+	}
+}
+
 func TestParameterPatternsAndSubstrings(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -742,6 +845,46 @@ func TestParameterPatternsAndSubstrings(t *testing.T) {
 				t.Errorf("expected %q, got %q (map %v)", tt.want, got["FOO"], got)
 			}
 		})
+	}
+}
+
+func TestSubstringBounds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"offset beyond the value", "A=hello\nFOO=${A:99999999999999999999}", ""},
+		{"length beyond the value", "A=hello\nFOO=${A:1:99999999999999999999}", "ello"},
+		{"length overflows an int", "A=hello\nFOO=${A:1:9223372036854775807}", "ello"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
+func TestUnterminatedGlobClass(t *testing.T) {
+	t.Parallel()
+
+	got, err := godotenv.Unmarshal("A=[abcx\nFOO=${A#[abc}")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "x"; got["FOO"] != want {
+		t.Errorf("expected %q, got %q", want, got["FOO"])
 	}
 }
 
@@ -929,6 +1072,37 @@ func TestLineContinuationWithCRLF(t *testing.T) {
 	}
 }
 
+func TestLineEndings(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  map[string]string
+	}{
+		{"LF terminates the line", "FOO=a\nBAR=2", map[string]string{"FOO": "a", "BAR": "2"}},
+		{"CRLF terminates the line", "FOO=a\r\nBAR=2", map[string]string{"FOO": "a", "BAR": "2"}},
+		{"bare CR is data", "FOO=a\rBAR=2", map[string]string{"FOO": "a\rBAR=2"}},
+		{"bare CR keeps the rest of the line", "FOO=a\rb", map[string]string{"FOO": "a\rb"}},
+		{"bare CR is data at end of input", "FOO=a\r", map[string]string{"FOO": "a\r"}},
+		{"bare CR is data for an empty value", "FOO=\r", map[string]string{"FOO": "\r"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !reflect.DeepEqual(tt.want, got) {
+				t.Errorf("expected %v, got %v", tt.want, got)
+			}
+		})
+	}
+}
+
 func TestANSICQuotingContext(t *testing.T) {
 	t.Parallel()
 
@@ -984,6 +1158,49 @@ func TestErrorParsing(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected error, got %v: %s", envMap, err)
 	}
+}
+
+func TestParseErrorMessages(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty key", "=foo", "empty key"},
+		{"key starting with a digit", "1FOO=1", "invalid character in key name"},
+		{"key starting with a dot", ".FOO=1", "invalid character in key name"},
+		{"caret points at the offending column", "A=1\nB C=2", "B C=2\n\t ^ Right here"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := godotenv.Unmarshal(tt.input)
+			if err == nil {
+				t.Fatalf("expected an error for %q", tt.input)
+			}
+			if msg := err.Error(); !strings.Contains(msg, tt.want) {
+				t.Errorf("expected error to contain %q, got:\n%s", tt.want, msg)
+			}
+		})
+	}
+
+	t.Run("unbound variable in Expand", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := godotenv.Expand("$GODOTENV_TEST_UNSET_VARIABLE", func([]byte) ([]byte, bool) {
+			return nil, false
+		})
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if msg := err.Error(); !strings.Contains(msg, "unbound variable") {
+			t.Errorf("expected error to mention the unbound variable, got:\n%s", msg)
+		}
+	})
 }
 
 // just test some single lines to show the general idea

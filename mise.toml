@@ -11,6 +11,7 @@ go = "1.27"
 "github:rhysd/actionlint" = "v1.7.12"
 "github:koalaman/shellcheck" = "v0.11.0"
 "go:golang.org/x/tools/cmd/goimports" = "v0.49.0"
+"go:golang.org/x/vuln/cmd/govulncheck" = "v1.1.4"
 "npm:renovate" = "44.56.3"
 
 [env]

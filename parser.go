@@ -170,6 +170,13 @@ func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error)
 				value = append(value, c)
 			}
 		case stateEscapeNone:
+			if c == '\r' && j+1 < len(p.data) && p.data[j+1] == '\n' {
+				p.lineNumber++
+				j++
+				state = stateValue
+				continue
+			}
+
 			if c == '\n' {
 				p.lineNumber++
 				state = stateValue
@@ -214,6 +221,13 @@ func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error)
 				value = append(value, c)
 			}
 		case stateEscapeDouble:
+			if c == '\r' && j+1 < len(p.data) && p.data[j+1] == '\n' {
+				p.lineNumber++
+				j++
+				state = stateQuoteDouble
+				continue
+			}
+
 			if c == '\n' {
 				p.lineNumber++
 				state = stateQuoteDouble

@@ -902,6 +902,33 @@ func TestExpand(t *testing.T) {
 	}
 }
 
+func TestLineContinuationWithCRLF(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"unquoted", "FOO=a\\\r\nb", "ab"},
+		{"double quoted", "FOO=\"a\\\r\nb\"", "ab"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
 func TestErrorReadDirectory(t *testing.T) {
 	t.Parallel()
 

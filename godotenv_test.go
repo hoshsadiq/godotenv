@@ -1301,6 +1301,80 @@ func BenchmarkReplaceAll(b *testing.B) {
 	}
 }
 
+func FuzzUnmarshal(f *testing.F) {
+	seeds := []string{
+		"FOO=bar",
+		"FOO='bar baz'",
+		`FOO="bar baz"`,
+		"FOO=$BAR",
+		"FOO=${BAR:-default}",
+		"export FOO=bar\n# comment\nBAZ=qux",
+		"FOO=$(echo hi)",
+		"FOO=a\\\nb",
+		"FOO=a\rBAR=2",
+		"FOO=\r",
+		"=foo",
+		"FOO=",
+		"FOO=${V:-${W}}",
+		"FOO=é",
+		`FOO="\x41\U0001F600"`,
+		"\xff\xfe",
+		"\x00",
+	}
+
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	f.Fuzz(func(t *testing.T, input string) {
+		env, err := godotenv.Unmarshal(input)
+		if err != nil {
+			_ = err.Error()
+			return
+		}
+
+		for key := range env {
+			if key == "" {
+				t.Errorf("empty key parsed from %q", input)
+			}
+		}
+	})
+}
+
+func FuzzExpand(f *testing.F) {
+	seeds := []string{
+		"",
+		"plain text",
+		"$HOME",
+		"${HOME}",
+		"${MISSING:-fallback}",
+		"${#HOME}",
+		"${MISSING:?boom}",
+		"${A//x/y}",
+		"cost is $",
+		"$'literal'",
+		"$(echo hi)",
+		"\xff",
+	}
+
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+
+	lookup := func(name []byte) ([]byte, bool) {
+		if string(name) == "HOME" {
+			return []byte("/home/me"), true
+		}
+		return nil, false
+	}
+
+	f.Fuzz(func(t *testing.T, input string) {
+		if _, err := godotenv.Expand(input, lookup); err != nil {
+			_ = err.Error()
+		}
+	})
+}
+
 func TestRoundTrip(t *testing.T) {
 	t.Parallel()
 

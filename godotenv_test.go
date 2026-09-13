@@ -693,6 +693,7 @@ func TestUnboundVariableOption(t *testing.T) {
 		{"unset braced expands empty by default", "FOO=${" + unset + "}", nil, map[string]string{"FOO": ""}, false},
 		{"unset unbraced errors with option", "FOO=$" + unset, []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
 		{"unset braced errors with option", "FOO=${" + unset + "}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"length of unset errors with option", "FOO=${#" + unset + "}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
 		{"default word is not an unbound error", "FOO=${" + unset + ":-fallback}", []godotenv.Option{godotenv.WithUnboundError()}, map[string]string{"FOO": "fallback"}, false},
 		{"set variable is fine", "BAR=1\nFOO=$BAR", []godotenv.Option{godotenv.WithUnboundError()}, map[string]string{"BAR": "1", "FOO": "1"}, false},
 	}
@@ -757,6 +758,7 @@ func TestParameterExpansion(t *testing.T) {
 		{"empty braces", "FOO=${}", nil, true},
 		{"assign op unsupported colon", "FOO=${" + unset + ":=x}", nil, true},
 		{"assign op unsupported", "FOO=${" + unset + "=x}", nil, true},
+		{"substring trailing junk", "A=hello\nFOO=${A:1:2:3}", nil, true},
 	}
 
 	for _, tt := range tests {
@@ -775,6 +777,16 @@ func TestParameterExpansion(t *testing.T) {
 				t.Errorf("expected %v, got %v", tt.want, got)
 			}
 		})
+	}
+}
+
+func TestExpansionNestingIsBounded(t *testing.T) {
+	t.Parallel()
+
+	input := "FOO=" + strings.Repeat("${GODOTENV_TEST_UNSET_VARIABLE:-", 2000) + "x" + strings.Repeat("}", 2000)
+
+	if _, err := godotenv.Unmarshal(input); err == nil {
+		t.Fatal("expected an error for deeply nested expansions")
 	}
 }
 
@@ -831,6 +843,10 @@ func TestParameterPatternsAndSubstrings(t *testing.T) {
 		{"substring negative end", "A=hello\nFOO=${A:2:-1}", "ll"},
 		{"substring out of range", "A=hello\nFOO=${A:99}", ""},
 		{"substring far negative", "A=hello\nFOO=${A: -99}", ""},
+		{"strip one character", "A=é\nFOO=${A#?}", ""},
+		{"length in characters", "A=é\nFOO=${#A}", "1"},
+		{"substring by character", "A=héllo\nFOO=${A:1:2}", "él"},
+		{"replace with wildcard", "A=héllo\nFOO=${A/h?llo/X}", "X"},
 	}
 
 	for _, tt := range tests {
@@ -930,6 +946,8 @@ func TestUnicodeEscapeInDoubleQuotes(t *testing.T) {
 	}{
 		{"ascii", `FOO="\u0041"`, "A"},
 		{"latin", `FOO="caf\u00e9"`, "café"},
+		{"hex", `FOO="\x41"`, "A"},
+		{"astral", `FOO="\U0001F600"`, "😀"},
 	}
 
 	for _, tt := range tests {
@@ -963,6 +981,8 @@ func TestWithPOSIX(t *testing.T) {
 		{"posix escaped dollar", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\$b"`, "a$b", false},
 		{"posix unknown escape literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\qb"`, `a\qb`, false},
 		{"posix unicode literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="\u0041"`, `\u0041`, false},
+		{"posix hex literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="\x41"`, `\x41`, false},
+		{"posix astral literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="\U0001F600"`, `\U0001F600`, false},
 		{"posix line continuation", []godotenv.Option{godotenv.WithPOSIX()}, "FOO=\"a\\\nb\"", "ab", false},
 		{"default single quote escape errors", nil, `FOO='a\'`, "", true},
 		{"posix single quote backslash literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO='a\'`, `a\`, false},
@@ -1242,6 +1262,40 @@ func TestWrite(t *testing.T) {
 			actual, _ := godotenv.Marshal(envMap)
 			if tt.expected != actual {
 				t.Errorf("Expected '%v' (%v) to write as '%v', got '%v' instead.", tt.env, envMap, tt.expected, actual)
+			}
+		})
+	}
+}
+
+func BenchmarkParse(b *testing.B) {
+	var bld strings.Builder
+	for i := range 10000 {
+		fmt.Fprintf(&bld, "KEY_%d=value_%d\n", i, i)
+	}
+	data := bld.String()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(data)))
+
+	for b.Loop() {
+		if _, err := godotenv.Unmarshal(data); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkReplaceAll(b *testing.B) {
+	for _, size := range []int{1 << 10, 1 << 13, 1 << 15} {
+		b.Run(fmt.Sprintf("value=%d", size), func(b *testing.B) {
+			input := "A=" + strings.Repeat("ab", size/2) + "\nFOO=${A//b/c}"
+
+			b.ReportAllocs()
+			b.SetBytes(int64(size))
+
+			for b.Loop() {
+				if _, err := godotenv.Unmarshal(input); err != nil {
+					b.Fatal(err)
+				}
 			}
 		})
 	}

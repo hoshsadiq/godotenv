@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"fmt"
 	"strconv"
+	"unicode/utf8"
 )
 
 const (
-	exportPrefix = "export"
+	exportPrefix      = "export"
+	maxExpansionDepth = 1000
 )
 
 type state uint8
@@ -31,6 +33,7 @@ type parser struct {
 	data       []byte
 	lineNumber int
 	cfg        config
+	depth      int
 }
 
 func newParser(d []byte, cfg config) *parser {
@@ -42,9 +45,11 @@ func newParser(d []byte, cfg config) *parser {
 }
 
 func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error) {
-	key := make([]byte, 0, len(p.data))
-	value := make([]byte, 0, len(p.data))
-	pendingWS := make([]byte, 0, len(p.data))
+	lineCap := longestLine(p.data)
+
+	key := make([]byte, 0, lineCap)
+	value := make([]byte, 0, lineCap)
+	pendingWS := make([]byte, 0, lineCap)
 
 	state := stateKey
 	valueStarted := false
@@ -287,6 +292,20 @@ func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error)
 				decoded, width := decodeUnicodeEscape(p.data, j)
 				value = append(value, decoded...)
 				j += width
+			case 'x':
+				decoded, width, err := decodeHexEscape(p.data, j, 2, false)
+				if err != nil {
+					return err
+				}
+				value = append(value, decoded...)
+				j += width - 1
+			case 'U':
+				decoded, width, err := decodeHexEscape(p.data, j, 8, true)
+				if err != nil {
+					return err
+				}
+				value = append(value, decoded...)
+				j += width - 1
 			default:
 				value = append(value, c)
 			}
@@ -346,6 +365,47 @@ func flushPendingWS(value, pending []byte) []byte {
 		return value
 	}
 	return append(value, pending...)
+}
+
+// longestLine returns the length of the longest line in data, without its
+// newline. It sizes the parse buffers, which only need to hold one line at a
+// time.
+func longestLine(data []byte) int {
+	longest, start := 0, 0
+	for i, c := range data {
+		if c != '\n' {
+			continue
+		}
+		if i-start > longest {
+			longest = i - start
+		}
+		start = i + 1
+	}
+	if len(data)-start > longest {
+		longest = len(data) - start
+	}
+	return longest
+}
+
+// runeBoundaries returns the byte offsets at which runes start, plus len(s).
+func runeBoundaries(s []byte) []int {
+	bounds := make([]int, 0, len(s)+1)
+	for i := 0; i < len(s); {
+		bounds = append(bounds, i)
+		_, size := utf8.DecodeRune(s[i:])
+		i += size
+	}
+	return append(bounds, len(s))
+}
+
+// byteOffset returns the byte offset of the n-th rune in value.
+func byteOffset(value []byte, n int) int {
+	i := 0
+	for ; n > 0 && i < len(value); n-- {
+		_, size := utf8.DecodeRune(value[i:])
+		i += size
+	}
+	return i
 }
 
 func isSpace(c byte) bool {
@@ -523,8 +583,12 @@ func (p *parser) expandBraced(characterStart int, inner []byte, lookupEnv Lookup
 			return nil, p.newParserError(characterStart, "bad substitution")
 		}
 
-		v, _ := lookupEnv(name)
-		return []byte(strconv.Itoa(len(v))), nil
+		v, envSet := lookupEnv(name)
+		if !envSet && p.cfg.unboundErr {
+			return nil, p.newUnboundVariable(characterStart, string(name))
+		}
+
+		return []byte(strconv.Itoa(utf8.RuneCount(v))), nil
 	}
 
 	var i int
@@ -626,6 +690,12 @@ func (p *parser) expandString(s string, lookupEnv LookupEnvFunc) (string, error)
 }
 
 func (p *parser) expandWord(characterStart int, w []byte, lookupEnv LookupEnvFunc) ([]byte, error) {
+	if p.depth >= maxExpansionDepth {
+		return nil, p.newParserError(characterStart, "expansion nesting too deep")
+	}
+	p.depth++
+	defer func() { p.depth-- }()
+
 	out := make([]byte, 0, len(w))
 	for j := 0; j < len(w); {
 		switch w[j] {
@@ -708,16 +778,17 @@ func (p *parser) stripPrefix(value, rest []byte) ([]byte, error) {
 		pattern = pattern[1:]
 	}
 
+	bounds := runeBoundaries(value)
 	if longest {
-		for k := len(value); k >= 0; k-- {
-			if matchGlob(pattern, value[:k]) {
-				return value[k:], nil
+		for i := len(bounds) - 1; i >= 0; i-- {
+			if matchGlob(pattern, value[:bounds[i]]) {
+				return value[bounds[i]:], nil
 			}
 		}
 	} else {
-		for k := 0; k <= len(value); k++ {
-			if matchGlob(pattern, value[:k]) {
-				return value[k:], nil
+		for _, b := range bounds {
+			if matchGlob(pattern, value[:b]) {
+				return value[b:], nil
 			}
 		}
 	}
@@ -733,16 +804,17 @@ func (p *parser) stripSuffix(value, rest []byte) ([]byte, error) {
 		pattern = pattern[1:]
 	}
 
+	bounds := runeBoundaries(value)
 	if longest {
-		for k := len(value); k >= 0; k-- {
-			if matchGlob(pattern, value[len(value)-k:]) {
-				return value[:len(value)-k], nil
+		for _, b := range bounds {
+			if matchGlob(pattern, value[b:]) {
+				return value[:b], nil
 			}
 		}
 	} else {
-		for k := 0; k <= len(value); k++ {
-			if matchGlob(pattern, value[len(value)-k:]) {
-				return value[:len(value)-k], nil
+		for i := len(bounds) - 1; i >= 0; i-- {
+			if matchGlob(pattern, value[bounds[i]:]) {
+				return value[:bounds[i]], nil
 			}
 		}
 	}
@@ -806,7 +878,7 @@ func (p *parser) substring(characterStart int, value, spec []byte) ([]byte, erro
 		return nil, p.newParserError(characterStart, "bad substitution: invalid substring")
 	}
 
-	length := len(value)
+	length := utf8.RuneCount(value)
 	begin := offset
 	if begin < 0 {
 		begin = length + begin
@@ -820,14 +892,14 @@ func (p *parser) substring(characterStart int, value, spec []byte) ([]byte, erro
 
 	rest = bytes.TrimLeft(rest, " ")
 	if len(rest) == 0 {
-		return value[begin:], nil
+		return value[byteOffset(value, begin):], nil
 	}
 	if rest[0] != ':' {
 		return nil, p.newParserError(characterStart, "bad substitution: invalid substring")
 	}
 
-	end, _, ok := parseIndex(rest[1:])
-	if !ok {
+	end, tail, ok := parseIndex(rest[1:])
+	if !ok || len(bytes.TrimSpace(tail)) != 0 {
 		return nil, p.newParserError(characterStart, "bad substitution: invalid substring length")
 	}
 	if end >= 0 {
@@ -843,7 +915,7 @@ func (p *parser) substring(characterStart int, value, spec []byte) ([]byte, erro
 		}
 	}
 
-	return value[begin:end], nil
+	return value[byteOffset(value, begin):byteOffset(value, end)], nil
 }
 
 func parseIndex(spec []byte) (value int, rest []byte, ok bool) {
@@ -891,6 +963,25 @@ func splitReplacement(spec []byte) (pattern, replacement []byte) {
 }
 
 func findMatch(pattern, str []byte, anchor byte) (start, end int, ok bool) {
+	if !bytes.ContainsAny(pattern, "*?[\\") {
+		switch anchor {
+		case '#':
+			if bytes.HasPrefix(str, pattern) {
+				return 0, len(pattern), true
+			}
+		case '%':
+			if bytes.HasSuffix(str, pattern) {
+				return len(str) - len(pattern), len(str), true
+			}
+		default:
+			if i := bytes.Index(str, pattern); i >= 0 {
+				return i, i + len(pattern), true
+			}
+		}
+
+		return 0, 0, false
+	}
+
 	switch anchor {
 	case '#':
 		for e := len(str); e >= 0; e-- {
@@ -942,8 +1033,9 @@ func matchGlob(pattern, s []byte) bool {
 			starS = si
 			pi++
 		case pi < len(pattern) && pattern[pi] == '?':
+			_, size := utf8.DecodeRune(s[si:])
 			pi++
-			si++
+			si += size
 		case pi < len(pattern) && pattern[pi] == '[':
 			next, matched, ok := matchClass(pattern, pi, s[si])
 			switch {

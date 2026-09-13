@@ -16,5 +16,5 @@ func execv(cmd string, cmdArgs []string) error {
 	}
 	args := append([]string{cmd}, cmdArgs...)
 
-	return syscall.Exec(prog, args, os.Environ())
+	return syscall.Exec(prog, args, os.Environ()) //nolint:gosec // exec is the purpose of this function
 }

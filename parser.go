@@ -791,14 +791,15 @@ func matchGlob(pattern, s []byte) bool {
 			si++
 		case pi < len(pattern) && pattern[pi] == '[':
 			next, matched := matchClass(pattern, pi, s[si])
-			if matched {
+			switch {
+			case matched:
 				pi = next
 				si++
-			} else if star >= 0 {
+			case star >= 0:
 				pi = star + 1
 				starS++
 				si = starS
-			} else {
+			default:
 				return false
 			}
 		case pi < len(pattern) && pattern[pi] == s[si]:

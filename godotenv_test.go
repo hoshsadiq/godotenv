@@ -2,6 +2,7 @@ package godotenv_test
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -106,7 +107,6 @@ func TestFileLoading(t *testing.T) {
 
 	t.Parallel()
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -156,9 +156,8 @@ func printDiff(t *testing.T, expected, actual map[string]string) {
 func TestLoadWithNoArgsLoadsDotEnv(t *testing.T) {
 	t.Parallel()
 
-	err := godotenv.Load()
-	pathError := err.(*os.PathError)
-	if pathError == nil || pathError.Op != "open" || pathError.Path != ".env" {
+	var pathError *os.PathError
+	if err := godotenv.Load(); !errors.As(err, &pathError) || pathError.Op != "open" || pathError.Path != ".env" {
 		t.Errorf("Didn't try and open .env by default")
 	}
 }
@@ -166,9 +165,8 @@ func TestLoadWithNoArgsLoadsDotEnv(t *testing.T) {
 func TestOverloadWithNoArgsOverloadsDotEnv(t *testing.T) {
 	t.Parallel()
 
-	err := godotenv.Overload()
-	pathError := err.(*os.PathError)
-	if pathError == nil || pathError.Op != "open" || pathError.Path != ".env" {
+	var pathError *os.PathError
+	if err := godotenv.Overload(); !errors.As(err, &pathError) || pathError.Op != "open" || pathError.Path != ".env" {
 		t.Errorf("Didn't try and open .env by default")
 	}
 }
@@ -348,7 +346,6 @@ func TestExpanding(t *testing.T) {
 
 	t.Parallel()
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			env, err := godotenv.Parse(strings.NewReader(tt.input))
@@ -497,7 +494,6 @@ func TestParsing(t *testing.T) {
 
 	t.Parallel()
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.rawEnvLine, func(t *testing.T) {
 			t.Parallel()
 
@@ -549,7 +545,6 @@ func TestCommentFirstLineAndEOF(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -620,7 +615,6 @@ func TestUnboundVariableOption(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := godotenv.New(tt.opts...).Unmarshal(tt.input)
 			if tt.wantErr {
@@ -683,7 +677,6 @@ func TestParameterExpansion(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := godotenv.Unmarshal(tt.input)
 			if tt.wantErr {
@@ -738,7 +731,6 @@ func TestParameterPatternsAndSubstrings(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -773,7 +765,6 @@ func TestANSICQuoting(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -799,7 +790,6 @@ func TestUnicodeEscapeInDoubleQuotes(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -838,7 +828,6 @@ func TestWithPOSIX(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := godotenv.New(tt.opts...).Unmarshal(tt.input)
 			if tt.wantErr {
@@ -893,7 +882,6 @@ func TestExpand(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -966,7 +954,6 @@ func TestWrite(t *testing.T) {
 
 	t.Parallel()
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.env, func(t *testing.T) {
 			t.Parallel()
 
@@ -984,7 +971,6 @@ func TestRoundTrip(t *testing.T) {
 
 	fixtures := []string{"equals.env", "exported.env", "plain.env", "quoted.env"}
 	for _, fixture := range fixtures {
-		fixture := fixture
 		t.Run(fixture, func(t *testing.T) {
 			t.Parallel()
 

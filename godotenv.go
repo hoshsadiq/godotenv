@@ -12,6 +12,7 @@
 package godotenv
 
 import (
+	"errors"
 	"io"
 	"os"
 	"sort"
@@ -168,7 +169,7 @@ func Expand(s string, lookup LookupEnvFunc) (string, error) {
 }
 
 // Write serializes the given environment and writes it to a file
-func Write(envMap map[string]string, filename string) error {
+func Write(envMap map[string]string, filename string) (err error) {
 	content, err := Marshal(envMap)
 	if err != nil {
 		return err
@@ -177,7 +178,11 @@ func Write(envMap map[string]string, filename string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			err = errors.Join(err, cerr)
+		}
+	}()
 	_, err = file.WriteString(content + "\n")
 	if err != nil {
 		return err
@@ -207,7 +212,7 @@ func isInt(s string) bool {
 		return false
 	}
 
-	for i := 0; i < len(s); i++ {
+	for i := range s {
 		if s[i] < '0' || s[i] > '9' {
 			return false
 		}
@@ -216,6 +221,7 @@ func isInt(s string) bool {
 	return true
 }
 
+// LookupEnv reports the value of the environment variable named by name and whether it exists.
 func LookupEnv(name []byte) (value []byte, exists bool) {
 	val, b := os.LookupEnv(string(name))
 	return []byte(val), b
@@ -277,7 +283,11 @@ func readFile(cfg config, filename string) (envMap map[string]string, err error)
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			err = errors.Join(err, cerr)
+		}
+	}()
 
 	return parseConfig(file, cfg, LookupEnv)
 }

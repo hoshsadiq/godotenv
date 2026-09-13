@@ -174,7 +174,7 @@ func Write(envMap map[string]string, filename string) (err error) {
 	if err != nil {
 		return err
 	}
-	file, err := os.Create(filename)
+	file, err := os.Create(filename) // #nosec G304 -- filename is provided by the caller
 	if err != nil {
 		return err
 	}
@@ -279,7 +279,7 @@ func readFiles(cfg config, filenames []string) (envMap map[string]string, err er
 }
 
 func readFile(cfg config, filename string) (envMap map[string]string, err error) {
-	file, err := os.Open(filename)
+	file, err := os.Open(filename) // #nosec G304 -- filename is provided by the caller
 	if err != nil {
 		return
 	}

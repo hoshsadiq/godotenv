@@ -28,7 +28,7 @@ jobs:
           version: "2026.9.0"
           install: true
           cache: true
-      - run: gosec -exclude-dir=dist -fmt sarif -out gosec.sarif ./... || true
+      - run: gosec -exclude-dir=dist -fmt sarif -out gosec.sarif ./...
       - uses: github/codeql-action/upload-sarif@5ba2889ada762081db2c4f32a729827dce632c7b  # v3
         if: always()
         with:

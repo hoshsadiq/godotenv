@@ -148,7 +148,7 @@ func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error)
 			case '$':
 				value = flushPendingWS(value, pendingWS)
 				pendingWS = pendingWS[:0]
-				res, w, err := p.resolveParameter(j, p.data[j+1:], lookupEnv)
+				res, w, err := p.resolveParameter(j, p.data[j+1:], true, lookupEnv)
 				if err != nil {
 					return err
 				}
@@ -188,7 +188,7 @@ func (p *parser) parse(m map[string]string, lookupEnv LookupEnvFunc) (err error)
 		case stateQuoteDouble:
 			switch c {
 			case '$':
-				res, w, err := p.resolveParameter(j, p.data[j+1:], lookupEnv)
+				res, w, err := p.resolveParameter(j, p.data[j+1:], false, lookupEnv)
 				if err != nil {
 					return err
 				}
@@ -339,7 +339,7 @@ func isAlphaNum(c uint8) bool {
 // resolveParameter resolves the parameter starting at s and reports how many
 // bytes it consumed. It handles $NAME and the ${NAME<op><word>} forms from the
 // POSIX shell parameter expansion rules.
-func (p *parser) resolveParameter(characterStart int, s []byte, lookupEnv LookupEnvFunc) (res []byte, skip int, err error) {
+func (p *parser) resolveParameter(characterStart int, s []byte, allowANSI bool, lookupEnv LookupEnvFunc) (res []byte, skip int, err error) {
 	if len(s) == 0 {
 		return []byte("$"), 0, nil
 	}
@@ -357,8 +357,10 @@ func (p *parser) resolveParameter(characterStart int, s []byte, lookupEnv Lookup
 			}
 		}
 		return []byte("$"), 0, nil
-	case s[0] == '\'':
+	case allowANSI && s[0] == '\'':
 		return p.ansiCString(characterStart, s)
+	case allowANSI && s[0] == '"':
+		return nil, 0, nil
 	case isShellSpecialVar(s[0]):
 		return []byte(""), 1, nil
 	default:
@@ -515,7 +517,7 @@ func (p *parser) expandString(s string, lookupEnv LookupEnvFunc) (string, error)
 			continue
 		}
 
-		res, skip, err := p.resolveParameter(j, data[j+1:], lookupEnv)
+		res, skip, err := p.resolveParameter(j, data[j+1:], true, lookupEnv)
 		if err != nil {
 			return "", err
 		}
@@ -536,7 +538,7 @@ func (p *parser) expandWord(characterStart int, w []byte, lookupEnv LookupEnvFun
 				out = append(out, w[j])
 			}
 		case '$':
-			res, skip, err := p.resolveParameter(characterStart+j, w[j+1:], lookupEnv)
+			res, skip, err := p.resolveParameter(characterStart+j, w[j+1:], true, lookupEnv)
 			if err != nil {
 				return nil, err
 			}

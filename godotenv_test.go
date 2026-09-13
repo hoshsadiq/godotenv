@@ -929,6 +929,43 @@ func TestLineContinuationWithCRLF(t *testing.T) {
 	}
 }
 
+func TestANSICQuotingContext(t *testing.T) {
+	t.Parallel()
+
+	loader := godotenv.New(godotenv.WithPOSIX())
+	got, err := loader.Unmarshal(`FOO="$'a\nb'"`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := `$'a\nb'`; got["FOO"] != want {
+		t.Errorf("expected %q, got %q", want, got["FOO"])
+	}
+
+	word, err := godotenv.Unmarshal(`FOO=${GODOTENV_TEST_MISSING:-$'a\nb'}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := "a\nb"; word["FOO"] != want {
+		t.Errorf("expected %q, got %q", want, word["FOO"])
+	}
+
+	translated, err := loader.Unmarshal(`FOO=$"a$'a\nb'b"`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := `a$'a\nb'b`; translated["FOO"] != want {
+		t.Errorf("expected %q, got %q", want, translated["FOO"])
+	}
+
+	translatedEscapes, err := loader.Unmarshal(`FOO=$"a\n$'a\nb'b"`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := `a\n$'a\nb'b`; translatedEscapes["FOO"] != want {
+		t.Errorf("expected %q, got %q", want, translatedEscapes["FOO"])
+	}
+}
+
 func TestErrorReadDirectory(t *testing.T) {
 	t.Parallel()
 

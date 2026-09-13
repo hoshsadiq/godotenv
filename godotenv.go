@@ -2,11 +2,11 @@
 // Examples/readme can be found on the github page at https://github.com/hoshsadiq/godotenv
 // The TL;DR is that you make a .env file that looks something like
 //
-// 		SOME_ENV_VAR=somevalue
+//	SOME_ENV_VAR=somevalue
 //
 // and then in your go code you can call
 //
-// 		godotenv.Load()
+//	godotenv.Load()
 //
 // and all the env vars declared in .env will be available through os.Getenv("SOME_ENV_VAR")
 package godotenv
@@ -90,7 +90,7 @@ func (l *Loader) Unmarshal(str string) (map[string]string, error) {
 // If you call Load without any args it will default to loading .env in the current path
 // You can otherwise tell it which files to load (there can be more than one) like
 //
-//		godotenv.Load("fileone", "filetwo")
+//	godotenv.Load("fileone", "filetwo")
 //
 // It's important to note that it WILL NOT OVERRIDE an env variable that already exists - consider the .env file to set dev vars or sensible defaults
 func Load(filenames ...string) (err error) {
@@ -102,7 +102,7 @@ func Load(filenames ...string) (err error) {
 // If you call Overload without any args it will default to loading .env in the current path
 // You can otherwise tell it which files to load (there can be more than one) like
 //
-//		godotenv.Overload("fileone", "filetwo")
+//	godotenv.Overload("fileone", "filetwo")
 //
 // It's important to note this WILL OVERRIDE an env variable that already exists - consider the .env file to forcefilly set all vars.
 func Overload(filenames ...string) (err error) {

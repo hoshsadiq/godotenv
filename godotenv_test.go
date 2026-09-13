@@ -362,7 +362,6 @@ func TestExpanding(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 func TestActualEnvVarsAreLeftAlone(t *testing.T) {

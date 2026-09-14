@@ -115,6 +115,9 @@ func (p *parser) parseBraced(c *cursor, lookupEnv LookupEnvFunc) ([]byte, error)
 
 	name := p.parseName(c)
 	if len(name) == 0 {
+		if !hasClosingBraceAt(c, c.pos) {
+			return nil, p.newParserError(brace, "unexpected EOF while looking for matching '}'")
+		}
 		return nil, p.newParserError(brace, "bad substitution")
 	}
 
@@ -240,7 +243,10 @@ func (p *parser) parseLength(c *cursor, brace int, lookupEnv LookupEnvFunc) ([]b
 	c.advance(1)
 
 	name := p.parseName(c)
-	if len(name) == 0 || c.eof() || c.peek() != '}' {
+	if !hasClosingBraceAt(c, c.pos) {
+		return nil, p.newParserError(brace, "unexpected EOF while looking for matching '}'")
+	}
+	if len(name) == 0 || c.peek() != '}' {
 		return nil, p.newParserError(brace, "bad substitution")
 	}
 	c.advance(1)

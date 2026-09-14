@@ -1260,6 +1260,10 @@ func TestParseErrorMessages(t *testing.T) {
 		{"caret at the assignment operator", "FOO=${BAR=}", "bad substitution: assignment is not supported on line 1\n\tFOO=${BAR=}\n\t         ^"},
 		{"caret at the missing modifier", "FOO=${BAR:}", "bad substitution: no modifier on line 1\n\tFOO=${BAR:}\n\t         ^"},
 		{"caret at the empty nested expansion", "FOO=${BAR:-${}}", "bad substitution: empty on line 1\n\tFOO=${BAR:-${}}\n\t            ^"},
+		{"unclosed length operator", "A=${#FOO\nB=1", "unexpected EOF while looking for matching '}'"},
+		{"unclosed expansion with empty name", "FOO=${ ", "unexpected EOF while looking for matching '}'"},
+		{"unclosed expansion starting with a quote", "A=${'000", "unexpected EOF while looking for matching '}'"},
+		{"closed expansion with invalid name start", "FOO=${ x}", "bad substitution"},
 	}
 
 	for _, tt := range tests {

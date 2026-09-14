@@ -12,6 +12,7 @@
 package godotenv
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -133,7 +134,7 @@ func parseConfig(r io.Reader, cfg config, lookupEnv LookupEnvFunc) (envMap map[s
 }
 
 func parseWithLookup(d []byte, cfg config, lookupEnv LookupEnvFunc) (envMap map[string]string, err error) {
-	envMap = make(map[string]string)
+	envMap = make(map[string]string, bytes.Count(d, []byte("\n"))+1)
 
 	expandEnv := func(s []byte) ([]byte, bool) {
 		if val, exists := envMap[string(s)]; exists {

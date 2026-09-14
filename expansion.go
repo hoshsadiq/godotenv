@@ -421,7 +421,11 @@ func (p *parser) parseWord(c *cursor, lookupEnv LookupEnvFunc) ([]byte, error) {
 	p.depth++
 	defer func() { p.depth-- }()
 
-	out := make([]byte, 0, 16)
+	hint := bytes.IndexByte(c.data[c.pos:], '}')
+	if hint < 0 {
+		hint = len(c.data) - c.pos
+	}
+	out := make([]byte, 0, hint)
 
 	for !c.eof() {
 		switch ch := c.peek(); ch {
@@ -567,12 +571,16 @@ func (p *parser) stripSuffix(value, rest []byte) ([]byte, error) {
 }
 
 func (p *parser) replace(value, pattern, replacement []byte, all bool, anchor byte) []byte {
-	out := make([]byte, 0, len(value))
+	var out []byte
 	offset := 0
 	for offset <= len(value) {
 		start, end, ok := findMatch(pattern, value[offset:], anchor)
 		if !ok {
 			break
+		}
+
+		if out == nil {
+			out = make([]byte, 0, len(value))
 		}
 
 		out = append(out, value[offset:offset+start]...)
@@ -591,6 +599,11 @@ func (p *parser) replace(value, pattern, replacement []byte, all bool, anchor by
 			}
 		}
 	}
+
+	if out == nil {
+		return value
+	}
+
 	out = append(out, value[offset:]...)
 
 	return out

@@ -257,8 +257,11 @@ func (p *parser) parseValue(c *cursor, lookupEnv LookupEnvFunc) error {
 			}
 
 			p.flushPending()
-			p.value = append(p.value, ch)
-			c.advance(1)
+			start := c.pos
+			for !c.eof() && isPlainValueByte(c.peek()) {
+				c.advance(1)
+			}
+			p.value = append(p.value, c.data[start:c.pos]...)
 		}
 	}
 
@@ -447,6 +450,15 @@ func byteOffset(value []byte, n int) int {
 
 func isSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+func isPlainValueByte(c byte) bool {
+	switch c {
+	case '\\', '\'', '"', '#', '$', ' ', '\t', '\r', '\n':
+		return false
+	}
+
+	return c >= 32
 }
 
 // isShellSpecialVar reports whether the character identifies a special

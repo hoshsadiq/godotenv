@@ -29,7 +29,7 @@ jobs:
           install: true
           cache: true
       - run: gosec -exclude-dir=dist -fmt sarif -out gosec.sarif ./...
-      - uses: github/codeql-action/upload-sarif@5ba2889ada762081db2c4f32a729827dce632c7b  # v3
+      - uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca  # v3
         if: always()
         with:
           sarif_file: gosec.sarif
@@ -58,7 +58,7 @@ jobs:
           install: true
           cache: true
       - run: gitleaks detect --source . --config .gitleaks.toml --redact --report-format sarif --report-path gitleaks.sarif
-      - uses: github/codeql-action/upload-sarif@5ba2889ada762081db2c4f32a729827dce632c7b  # v3
+      - uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca  # v3
         if: always()
         with:
           sarif_file: gitleaks.sarif

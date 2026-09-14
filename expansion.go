@@ -277,8 +277,13 @@ func (p *parser) parseWordUntilBrace(c *cursor, brace int, lookupEnv LookupEnvFu
 
 	word, err := p.parseWord(c, lookupEnv)
 	if err != nil {
-		if !hasClosingBraceAt(c, start) {
-			return nil, p.newParserError(brace, "unexpected EOF while looking for matching '}'")
+		// The innermost frame decides whether the expansion is unclosed; the
+		// outer frames would only repeat the same scan.
+		if !p.braceChecked {
+			p.braceChecked = true
+			if !hasClosingBraceAt(c, start) {
+				return nil, p.newParserError(brace, "unexpected EOF while looking for matching '}'")
+			}
 		}
 		return nil, err
 	}
@@ -421,11 +426,15 @@ func (p *parser) parseWord(c *cursor, lookupEnv LookupEnvFunc) ([]byte, error) {
 	p.depth++
 	defer func() { p.depth-- }()
 
-	hint := bytes.IndexByte(c.data[c.pos:], '}')
-	if hint < 0 {
-		hint = len(c.data) - c.pos
+	prefix := 0
+	for c.pos+prefix < len(c.data) && !isWordSpecialByte(c.data[c.pos+prefix]) {
+		prefix++
 	}
-	out := make([]byte, 0, hint)
+	if c.pos+prefix < len(c.data) && c.data[c.pos+prefix] == '}' {
+		c.advance(prefix)
+		return c.data[c.pos-prefix : c.pos], nil
+	}
+	out := make([]byte, 0, prefix+16)
 
 	for !c.eof() {
 		switch ch := c.peek(); ch {

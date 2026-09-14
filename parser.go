@@ -16,11 +16,12 @@ const (
 type LookupEnvFunc func(name []byte) (value []byte, exists bool)
 
 type parser struct {
-	data      []byte
-	cfg       config
-	depth     int
-	value     []byte
-	pendingWS []byte
+	data         []byte
+	cfg          config
+	depth        int
+	braceChecked bool
+	value        []byte
+	pendingWS    []byte
 }
 
 func newParser(d []byte, cfg config) *parser {
@@ -459,6 +460,15 @@ func isPlainValueByte(c byte) bool {
 	}
 
 	return c >= 32
+}
+
+func isWordSpecialByte(c byte) bool {
+	switch c {
+	case '}', '{', '\\', '\'', '"', '$':
+		return true
+	}
+
+	return false
 }
 
 // isShellSpecialVar reports whether the character identifies a special

@@ -1254,6 +1254,12 @@ func TestParseErrorMessages(t *testing.T) {
 		{"caret at the substring operator", "FOO=hello\nA=${FOO:x}", "bad substitution: invalid substring on line 2\n\tA=${FOO:x}\n\t        ^"},
 		{"caret at the unmatched quote", "A=$'x", "unmatched single quote on line 1\n\tA=$'x\n\t   ^"},
 		{"caret at the substring length", "A=hello\nFOO=${A:1:2:3}", "bad substitution: invalid substring length on line 2\n\tFOO=${A:1:2:3}\n\t        ^"},
+		{"unclosed expansion with assignment", "A=${FOO=", "unexpected EOF while looking for matching '}' on line 1\n\tA=${FOO=\n\t   ^"},
+		{"closed assignment operator", "A=${FOO=}", "bad substitution: assignment is not supported"},
+		{"caret at the unsupported operator", "FOO=${BAR@x}", "bad substitution: unsupported operator on line 1\n\tFOO=${BAR@x}\n\t         ^"},
+		{"caret at the assignment operator", "FOO=${BAR=}", "bad substitution: assignment is not supported on line 1\n\tFOO=${BAR=}\n\t         ^"},
+		{"caret at the missing modifier", "FOO=${BAR:}", "bad substitution: no modifier on line 1\n\tFOO=${BAR:}\n\t         ^"},
+		{"caret at the empty nested expansion", "FOO=${BAR:-${}}", "bad substitution: empty on line 1\n\tFOO=${BAR:-${}}\n\t            ^"},
 	}
 
 	for _, tt := range tests {
@@ -1281,6 +1287,20 @@ func TestParseErrorMessages(t *testing.T) {
 		}
 		if msg := err.Error(); !strings.Contains(msg, "unbound variable") {
 			t.Errorf("expected error to mention the unbound variable, got:\n%s", msg)
+		}
+	})
+
+	t.Run("unclosed word reports EOF before an inner unbound error", func(t *testing.T) {
+		t.Parallel()
+
+		const unset = "GODOTENV_TEST_UNSET_VARIABLE"
+
+		_, err := godotenv.New(godotenv.WithUnboundError()).Unmarshal("A=${" + unset + ":-${" + unset + "}")
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if msg := err.Error(); !strings.Contains(msg, "unexpected EOF while looking for matching '}'") {
+			t.Errorf("expected an EOF error, got:\n%s", msg)
 		}
 	})
 }

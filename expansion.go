@@ -169,6 +169,9 @@ func (p *parser) parseBraced(c *cursor, lookupEnv LookupEnvFunc) ([]byte, error)
 			}
 			return value, nil
 		case '=':
+			if !hasClosingBraceAt(c, c.pos) {
+				return nil, p.newParserError(brace, "unexpected EOF while looking for matching '}'")
+			}
 			return nil, p.newParserError(opPos, "bad substitution: assignment is not supported")
 		default:
 			return p.expandSubstring(c, brace, opPos, value)
@@ -210,6 +213,9 @@ func (p *parser) parseBraced(c *cursor, lookupEnv LookupEnvFunc) ([]byte, error)
 		}
 		return value, nil
 	case '=':
+		if !hasClosingBraceAt(c, c.pos) {
+			return nil, p.newParserError(brace, "unexpected EOF while looking for matching '}'")
+		}
 		return nil, p.newParserError(opPos, "bad substitution: assignment is not supported")
 	case '#', '%':
 		rest := scanRaw(c, false)
@@ -223,7 +229,7 @@ func (p *parser) parseBraced(c *cursor, lookupEnv LookupEnvFunc) ([]byte, error)
 	case '/':
 		return p.expandReplace(c, brace, value, lookupEnv)
 	default:
-		if !hasClosingBrace(c) {
+		if !hasClosingBraceAt(c, c.pos) {
 			return nil, p.newParserError(brace, "unexpected EOF while looking for matching '}'")
 		}
 		return nil, p.newParserError(opPos, "bad substitution: unsupported operator")
@@ -261,8 +267,13 @@ func (p *parser) parseName(c *cursor) []byte {
 }
 
 func (p *parser) parseWordUntilBrace(c *cursor, brace int, lookupEnv LookupEnvFunc) ([]byte, error) {
+	start := c.pos
+
 	word, err := p.parseWord(c, lookupEnv)
 	if err != nil {
+		if !hasClosingBraceAt(c, start) {
+			return nil, p.newParserError(brace, "unexpected EOF while looking for matching '}'")
+		}
 		return nil, err
 	}
 	if err := p.consumeBrace(c, brace); err != nil {
@@ -387,8 +398,9 @@ func scanRaw(c *cursor, stopAtSlash bool) []byte {
 	return c.data[start:c.pos]
 }
 
-func hasClosingBrace(c *cursor) bool {
+func hasClosingBraceAt(c *cursor, start int) bool {
 	pos := c.pos
+	c.pos = start
 	scanRaw(c, false)
 	ok := !c.eof() && c.peek() == '}'
 	c.pos = pos

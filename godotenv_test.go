@@ -759,6 +759,18 @@ func TestParameterExpansion(t *testing.T) {
 		{"assign op unsupported colon", "FOO=${" + unset + ":=x}", nil, true},
 		{"assign op unsupported", "FOO=${" + unset + "=x}", nil, true},
 		{"substring trailing junk", "A=hello\nFOO=${A:1:2:3}", nil, true},
+		{"word quote closes before brace", "A=xyz\nB=${A-'a\\'b}", map[string]string{"A": "xyz", "B": "xyz"}, false},
+		{"word unterminated quote errors", "A=xyz\nB=${A-'a\\'b'}", nil, true},
+		{"word slash inside quote errors", "A=xyz\nB=${A/'/x}", nil, true},
+		{"strip pattern unterminated quote errors", "A=xyz\nB=${A#'a\\'b'}", nil, true},
+		{"default word unterminated quote errors", "A=xyz\nB=${A:-'a\\'b'}", nil, true},
+		{"replace pattern with brace", "A=xyz\nB=${A/a{b/c}", map[string]string{"A": "xyz", "B": "xyz"}, false},
+		{"unset word backslash in quotes", "B=${" + unset + "-'a\\'b}", map[string]string{"B": "a\\b"}, false},
+		{"unset word unterminated quote errors", "B=${" + unset + "-'a\\'b'}", nil, true},
+		{"word brace is literal", "B=${" + unset + ":-a{b}", map[string]string{"B": "a{b"}, false},
+		{"word brace does not nest", "B=${" + unset + ":-a{b}c}", map[string]string{"B": "a{bc}"}, false},
+		{"word brace with value", "GODOTENV_PE_A=xyz\nFOO=${GODOTENV_PE_A:-a{b}c}", map[string]string{"GODOTENV_PE_A": "xyz", "FOO": "xyzc}"}, false},
+		{"word empty braces stay literal", "B=${" + unset + ":-{}}", map[string]string{"B": "{}"}, false},
 	}
 
 	for _, tt := range tests {
@@ -783,11 +795,51 @@ func TestParameterExpansion(t *testing.T) {
 func TestExpansionNestingIsBounded(t *testing.T) {
 	t.Parallel()
 
-	input := "FOO=" + strings.Repeat("${GODOTENV_TEST_UNSET_VARIABLE:-", 2000) + "x" + strings.Repeat("}", 2000)
+	deep := strings.Repeat("${GODOTENV_TEST_UNSET_VARIABLE:-", 2000) + "x" + strings.Repeat("}", 2000)
 
-	if _, err := godotenv.Unmarshal(input); err == nil {
-		t.Fatal("expected an error for deeply nested expansions")
-	}
+	t.Run("word", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := godotenv.Unmarshal("FOO=" + deep)
+		if err == nil {
+			t.Fatal("expected an error for deeply nested expansions")
+		}
+		if !strings.Contains(err.Error(), "expansion nesting too deep") {
+			t.Error("expected a nesting-too-deep error")
+		}
+	})
+
+	t.Run("replace replacement", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := godotenv.Unmarshal("A=x\nFOO=${A/a/" + deep + "}")
+		if err == nil {
+			t.Fatal("expected an error for a deeply nested replacement")
+		}
+		if !strings.Contains(err.Error(), "expansion nesting too deep") {
+			t.Error("expected a nesting-too-deep error")
+		}
+	})
+
+	t.Run("replace replacement caret", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := godotenv.Unmarshal("A=x\nFOO=${A/a/" + deep + "}")
+		if err == nil {
+			t.Fatal("expected an error for a deeply nested replacement")
+		}
+
+		col := -1
+		for _, line := range strings.Split(err.Error(), "\n") {
+			if i := strings.Index(line, "^"); i >= 0 {
+				col = i
+				break
+			}
+		}
+		if col != 32011 {
+			t.Errorf("caret column = %d, want 32011", col)
+		}
+	})
 }
 
 func TestQuotedCloseBraceInExpansion(t *testing.T) {
@@ -847,6 +899,10 @@ func TestParameterPatternsAndSubstrings(t *testing.T) {
 		{"length in characters", "A=é\nFOO=${#A}", "1"},
 		{"substring by character", "A=héllo\nFOO=${A:1:2}", "él"},
 		{"replace with wildcard", "A=héllo\nFOO=${A/h?llo/X}", "X"},
+		{"strip pattern with brace", "A=a{bX\nFOO=${A#a{b}", "X"},
+		{"strip pattern brace wildcard", "A=a{bX\nFOO=${A##*{b}", "X"},
+		{"replace pattern with unbalanced brace", "A=xyz\nFOO=${A/a{b}", "xyz"},
+		{"replace pattern with brace and replacement", "A=a{bX\nFOO=${A/a{b/REP}", "REPX"},
 	}
 
 	for _, tt := range tests {
@@ -1192,6 +1248,12 @@ func TestParseErrorMessages(t *testing.T) {
 		{"key starting with a digit", "1FOO=1", "invalid character in key name"},
 		{"key starting with a dot", ".FOO=1", "invalid character in key name"},
 		{"caret points at the offending column", "A=1\nB C=2", "B C=2\n\t ^ Right here"},
+		{"unclosed expansion", "A=${FOO", "unexpected EOF while looking for matching '}'"},
+		{"unclosed expansion before a newline", "A=${FOO\nB=1", "unexpected EOF while looking for matching '}'"},
+		{"unclosed expansion after a colon", "A=${FOO:", "unexpected EOF while looking for matching '}'"},
+		{"caret at the substring operator", "FOO=hello\nA=${FOO:x}", "bad substitution: invalid substring on line 2\n\tA=${FOO:x}\n\t        ^"},
+		{"caret at the unmatched quote", "A=$'x", "unmatched single quote on line 1\n\tA=$'x\n\t   ^"},
+		{"caret at the substring length", "A=hello\nFOO=${A:1:2:3}", "bad substitution: invalid substring length on line 2\n\tFOO=${A:1:2:3}\n\t        ^"},
 	}
 
 	for _, tt := range tests {

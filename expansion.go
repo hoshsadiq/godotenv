@@ -129,7 +129,10 @@ func (p *parser) parseBraced(c *cursor, lookupEnv LookupEnvFunc) ([]byte, error)
 	if c.peek() == ':' {
 		colon = true
 		c.advance(1)
-		if c.eof() || c.peek() == '}' {
+		if c.eof() {
+			return nil, p.newParserError(brace, "unexpected EOF while looking for matching '}'")
+		}
+		if c.peek() == '}' {
 			return nil, p.newParserError(nameEnd, "bad substitution: no modifier")
 		}
 	}
@@ -220,6 +223,9 @@ func (p *parser) parseBraced(c *cursor, lookupEnv LookupEnvFunc) ([]byte, error)
 	case '/':
 		return p.expandReplace(c, brace, value, lookupEnv)
 	default:
+		if !hasClosingBrace(c) {
+			return nil, p.newParserError(brace, "unexpected EOF while looking for matching '}'")
+		}
 		return nil, p.newParserError(opPos, "bad substitution: unsupported operator")
 	}
 }
@@ -346,23 +352,29 @@ func scanRaw(c *cursor, stopAtSlash bool) []byte {
 
 	for !c.eof() {
 		switch ch := c.peek(); {
-		case ch == '\\':
-			c.advance(2)
-			continue
-		case stopAtSlash && ch == '/':
-			return c.data[start:c.pos]
 		case quote == '\'':
 			if ch == '\'' {
 				quote = 0
 			}
 		case quote == '"':
+			if ch == '\\' {
+				c.advance(2)
+				continue
+			}
 			if ch == '"' {
 				quote = 0
 			}
 		case ch == '\'' || ch == '"':
 			quote = ch
-		case ch == '{':
+		case ch == '\\':
+			c.advance(2)
+			continue
+		case stopAtSlash && ch == '/':
+			return c.data[start:c.pos]
+		case ch == '$' && c.peekAt(1) == '{':
 			depth++
+			c.advance(2)
+			continue
 		case ch == '}':
 			if depth == 0 {
 				return c.data[start:c.pos]
@@ -375,6 +387,15 @@ func scanRaw(c *cursor, stopAtSlash bool) []byte {
 	return c.data[start:c.pos]
 }
 
+func hasClosingBrace(c *cursor) bool {
+	pos := c.pos
+	scanRaw(c, false)
+	ok := !c.eof() && c.peek() == '}'
+	c.pos = pos
+
+	return ok
+}
+
 func (p *parser) parseWord(c *cursor, lookupEnv LookupEnvFunc) ([]byte, error) {
 	if p.depth >= maxExpansionDepth {
 		return nil, p.newParserError(c.pos, "expansion nesting too deep")
@@ -383,21 +404,11 @@ func (p *parser) parseWord(c *cursor, lookupEnv LookupEnvFunc) ([]byte, error) {
 	defer func() { p.depth-- }()
 
 	out := make([]byte, 0, 16)
-	depth := 0
 
 	for !c.eof() {
 		switch ch := c.peek(); ch {
 		case '}':
-			if depth == 0 {
-				return out, nil
-			}
-			depth--
-			out = append(out, ch)
-			c.advance(1)
-		case '{':
-			depth++
-			out = append(out, ch)
-			c.advance(1)
+			return out, nil
 		case '\\':
 			c.advance(1)
 			if !c.eof() {

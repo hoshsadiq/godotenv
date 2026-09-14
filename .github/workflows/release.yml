@@ -46,5 +46,3 @@ jobs:
         run: mise run release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Sign container image with cosign
-        run: cosign sign --yes ghcr.io/${{ github.repository }}:${{ github.ref_name }}

@@ -17,6 +17,7 @@ env:
 permissions:
   contents: write
   packages: write
+  id-token: write
 
 jobs:
   Release:
@@ -31,15 +32,6 @@ jobs:
           version: "2026.9.0"
           install: true
           cache: true
-      - name: Import GPG key
-        env:
-          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-        run: |
-          if [ -n "$GPG_PRIVATE_KEY" ]; then
-            echo "$GPG_PRIVATE_KEY" | gpg --import --batch --no-tty
-            printf "%s:6:\n" "$GPG_FINGERPRINT" | gpg --import-ownertrust
-          fi
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
       - name: Log in to GitHub Container Registry
@@ -53,5 +45,4 @@ jobs:
       - name: Run GoReleaser
         run: mise run release
         env:
-          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

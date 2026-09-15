@@ -42,27 +42,33 @@ curl -fsSL "https://github.com/hoshsadiq/godotenv/releases/download/v1.0.0/godot
 
 For a list of os/arch combinations, see the [releases page](https://github.com/hoshsadiq/godotenv/releases).
 
-In the case of GitHub releases, you can verify the artifact using GPG:
+In the case of GitHub releases, the checksums file is signed with [cosign](https://github.com/sigstore/cosign) (keyless, via GitHub Actions OIDC):
 ```shell
 os="linux" # linux, darwin, freebsd, or windows
 arch="amd64" # amd64, armv6, armv7, or arm64
-GPG_FINGERPRINT=92868EBC70DF83601ED085F7CE5D02E4C68038C1
-
-curl -fsSL https://github.com/hoshsadiq.gpg  | gpg --import --batch --no-tty
-printf "%s:6:\n" "${GPG_FINGERPRINT}" | gpg --import-ownertrust
 
 # this is for latest release, substitute URL as per above if you need a specific release
 curl -fsSL "https://github.com/hoshsadiq/godotenv/releases/latest/download/godotenv_checksums.txt" -o godotenv_checksums.txt
-curl -fsSL "https://github.com/hoshsadiq/godotenv/releases/latest/download/godotenv_checksums.txt.sig" -o godotenv_checksums.txt.sig
+curl -fsSL "https://github.com/hoshsadiq/godotenv/releases/latest/download/godotenv_checksums.txt.sigstore.json" -o godotenv_checksums.txt.sigstore.json
 
-tmpfifo="$(mktemp -u -t gpgverifyXXXXXXXXX)"
-gpg --status-fd 3 --verify godotenv_checksums.txt.sig godotenv_checksums.txt 3>$tmpfifo
-grep -Eq '^\[GNUPG:] TRUST_(ULTIMATE|FULLY)' $tmpfifo
+cosign verify-blob \
+  --certificate-identity-regexp '^https://github.com/hoshsadiq/godotenv/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --bundle godotenv_checksums.txt.sigstore.json \
+  godotenv_checksums.txt
 
-grep godotenv_linux_amd64.tar.gz godotenv_checksums.txt | sha256sum -c
+grep "godotenv_${os}_${arch}" godotenv_checksums.txt | sha256sum -c
 ```
 
 Lastly, you can use Docker or Podman to pull in godotenv. See the [releases page](https://github.com/hoshsadiq/godotenv/releases) for the URLs and tags. Note the images are based on [distroless](https://github.com/GoogleContainerTools/distroless) so they do not have a shell or anything else attached. Thus they're only useful for minimal images or copying the executable over into your own Docker image.
+
+Container images are signed with cosign as well:
+```shell
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/hoshsadiq/godotenv/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/hoshsadiq/godotenv:latest
+```
 
 ## Usage
 

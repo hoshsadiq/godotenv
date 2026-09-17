@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to create and release, e.g. v1.1.0 or v1.1.0-rc.1 (ignored when dispatching on an existing tag)'
+        required: true
+        type: string
 
 concurrency:
   group: release-${{ github.ref }}
@@ -42,6 +47,33 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Allow arm Docker builds
         run: sudo docker run --privileged linuxkit/binfmt:v0.8
+      - name: Create and push tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if git describe --exact-match --tags HEAD >/dev/null 2>&1; then
+            echo "HEAD already has a tag; releasing it as-is"
+            exit 0
+          fi
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version input must be a semver tag like v1.2.3 or v1.2.3-rc.1"
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+            echo "::error::tag $VERSION already exists"
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$VERSION" -m "$VERSION"
+          latest="$(git -c versionsort.suffix=- tag --list 'v*' --sort=-version:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' | head -n1)"
+          if [ "$latest" != "$VERSION" ]; then
+            git tag -d "$VERSION" >/dev/null
+            echo "::error::$VERSION must be newer than the latest tag ($latest)"
+            exit 1
+          fi
+          git push origin "$VERSION"
       - name: Run GoReleaser
         run: mise run release
         env:

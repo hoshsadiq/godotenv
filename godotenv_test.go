@@ -118,10 +118,10 @@ func TestFileLoading(t *testing.T) {
 			}
 			defer file.Close()
 
-			envMap, err := godotenv.ParseWithLookup(file, func(name []byte) (value []byte, exists bool) {
+			envMap, err := godotenv.New(godotenv.WithLookup(func(name []byte) (value []byte, exists bool) {
 				val, exists := tt.presets[string(name)]
 				return []byte(val), exists
-			})
+			})).Decode(file)
 			if err != nil {
 				t.Fatalf("Error loading %v: %s", tt.envFileName, err)
 			}
@@ -153,6 +153,29 @@ func printDiff(t *testing.T, expected, actual map[string]string) {
 			t.Logf("+ %q = %q", k, expected[k])
 		}
 	}
+}
+
+func readFiles(filenames ...string) (map[string]string, error) {
+	envMap := make(map[string]string)
+	for _, filename := range filenames {
+		individual, err := decodeFile(godotenv.New(), filename)
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range individual {
+			envMap[key] = value
+		}
+	}
+	return envMap, nil
+}
+
+func decodeFile(loader *godotenv.Loader, filename string) (map[string]string, error) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return loader.Decode(file)
 }
 
 func TestLoadWithNoArgsLoadsDotEnv(t *testing.T) {
@@ -201,7 +224,7 @@ func TestReadPlainEnv(t *testing.T) {
 		"OPTION_C": "",
 	}
 
-	envMap, err := godotenv.Read(envFileName)
+	envMap, err := readFiles(envFileName)
 	if err != nil {
 		t.Errorf("Error reading file: %s", err)
 	}
@@ -212,15 +235,15 @@ func TestReadPlainEnv(t *testing.T) {
 
 	for key, value := range expectedValues {
 		if envMap[key] != value {
-			t.Error("Read got one of the keys wrong")
+			t.Error("Decode got one of the keys wrong")
 		}
 	}
 }
 
-func TestParse(t *testing.T) {
+func TestDecode(t *testing.T) {
 	t.Parallel()
 
-	envMap, err := godotenv.Parse(bytes.NewReader([]byte("ONE=1\nTWO='2'")))
+	envMap, err := godotenv.Decode(bytes.NewReader([]byte("ONE=1\nTWO='2'")))
 	expectedValues := map[string]string{
 		"ONE": "1",
 		"TWO": "2",
@@ -307,7 +330,7 @@ func TestReadMultipleFilesLastWins(t *testing.T) {
 	writeTestFile(t, first, "SHARED=first\nONLY_FIRST=1\n")
 	writeTestFile(t, second, "SHARED=second\nONLY_SECOND=2\n")
 
-	got, err := godotenv.Read(first, second)
+	got, err := readFiles(first, second)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -424,7 +447,7 @@ func TestExpanding(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			env, err := godotenv.Parse(strings.NewReader(tt.input))
+			env, err := godotenv.Decode(strings.NewReader(tt.input))
 			if err != nil {
 				t.Errorf("Error: %s", err.Error())
 			}
@@ -596,7 +619,7 @@ func TestParsing(t *testing.T) {
 				return []byte(val), false
 			}
 
-			newEnv, _ = godotenv.ParseWithLookup(strings.NewReader(tt.rawEnvLine), expandEnv)
+			newEnv, _ = godotenv.New(godotenv.WithLookup(expandEnv)).Decode(strings.NewReader(tt.rawEnvLine))
 			if tt.expectedKey == "" {
 				if !reflect.DeepEqual(tt.env, newEnv) {
 					t.Errorf("Expected '%v' to parse as '%v' => '%v', got %+v", tt.rawEnvLine, tt.expectedKey, tt.expectedValue, newEnv)
@@ -630,7 +653,7 @@ func TestCommandSubstitution(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Unmarshal(tt.input)
+			got, err := godotenv.Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -648,7 +671,7 @@ func TestKeyValidation(t *testing.T) {
 		t.Run(input, func(t *testing.T) {
 			t.Parallel()
 
-			env, err := godotenv.Unmarshal(input)
+			env, err := godotenv.Unmarshal([]byte(input))
 			if err == nil {
 				t.Errorf("expected %q to be rejected, got %v", input, env)
 			}
@@ -678,9 +701,9 @@ func TestValueWhitespace(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.ParseWithLookup(strings.NewReader(tt.input), func([]byte) ([]byte, bool) {
+			got, err := godotenv.New(godotenv.WithLookup(func([]byte) ([]byte, bool) {
 				return nil, false
-			})
+			})).Decode(strings.NewReader(tt.input))
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got %v", got)
@@ -714,7 +737,7 @@ func TestTrailingBackslashAtEOF(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Unmarshal(tt.input)
+			got, err := godotenv.Unmarshal([]byte(tt.input))
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got %v", got)
@@ -749,7 +772,7 @@ func TestCommentFirstLineAndEOF(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Parse(strings.NewReader(tt.input))
+			got, err := godotenv.Decode(strings.NewReader(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -763,7 +786,7 @@ func TestCommentFirstLineAndEOF(t *testing.T) {
 func TestReadWhitespaceEnv(t *testing.T) {
 	t.Parallel()
 
-	got, err := godotenv.Read("fixtures/whitespace.env")
+	got, err := readFiles("fixtures/whitespace.env")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -782,7 +805,7 @@ func TestReadWhitespaceEnv(t *testing.T) {
 func TestReadLineContinuationEnv(t *testing.T) {
 	t.Parallel()
 
-	got, err := godotenv.Read("fixtures/line_continuation.env")
+	got, err := readFiles("fixtures/line_continuation.env")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -830,7 +853,7 @@ func TestUnboundVariableOption(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := godotenv.New(tt.opts...).Unmarshal(tt.input)
+			got, err := godotenv.New(tt.opts...).Unmarshal([]byte(tt.input))
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected an error, got nil")
@@ -851,11 +874,11 @@ func TestNewDefaultsMatchPackageFuncs(t *testing.T) {
 	t.Parallel()
 
 	input := "FOO=bar\nBAZ=${FOO}"
-	want, err := godotenv.Unmarshal(input)
+	want, err := godotenv.Unmarshal([]byte(input))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got, err := godotenv.New().Unmarshal(input)
+	got, err := godotenv.New().Unmarshal([]byte(input))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -867,10 +890,10 @@ func TestNewDefaultsMatchPackageFuncs(t *testing.T) {
 func TestLoaderOptions(t *testing.T) {
 	t.Parallel()
 
-	t.Run("unbound error through Read", func(t *testing.T) {
+	t.Run("unbound error through Decode", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := godotenv.New(godotenv.WithUnboundError()).Read("fixtures/substitutions.env")
+		_, err := decodeFile(godotenv.New(godotenv.WithUnboundError()), "fixtures/substitutions.env")
 		if err == nil {
 			t.Fatal("expected an error for the unset variable")
 		}
@@ -899,7 +922,7 @@ func TestLoaderOptions(t *testing.T) {
 		t.Parallel()
 
 		for _, opts := range [][]godotenv.Option{nil, {godotenv.WithBash()}} {
-			got, err := godotenv.New(opts...).Unmarshal(`FOO='\'`)
+			got, err := godotenv.New(opts...).Unmarshal([]byte(`FOO='\'`))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -912,7 +935,7 @@ func TestLoaderOptions(t *testing.T) {
 	t.Run("default reads quoted env", func(t *testing.T) {
 		t.Parallel()
 
-		if _, err := godotenv.New().Read("fixtures/quoted.env"); err != nil {
+		if _, err := decodeFile(godotenv.New(), "fixtures/quoted.env"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -964,7 +987,7 @@ func TestParameterExpansion(t *testing.T) {
 			if tt.bash {
 				opts = append(opts, godotenv.WithBash())
 			}
-			got, err := godotenv.New(opts...).Unmarshal(tt.input)
+			got, err := godotenv.New(opts...).Unmarshal([]byte(tt.input))
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected an error, got nil")
@@ -989,7 +1012,7 @@ func TestExpansionNestingIsBounded(t *testing.T) {
 	t.Run("word", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := godotenv.Unmarshal("FOO=" + deep)
+		_, err := godotenv.Unmarshal([]byte("FOO=" + deep))
 		if err == nil {
 			t.Fatal("expected an error for deeply nested expansions")
 		}
@@ -1003,7 +1026,7 @@ func TestExpansionNestingIsBounded(t *testing.T) {
 
 		deepPattern := strings.Repeat("${GODOTENV_TEST_UNSET_VARIABLE#", 2000) + "x" + strings.Repeat("}", 2000)
 
-		_, err := godotenv.Unmarshal("FOO=" + deepPattern)
+		_, err := godotenv.Unmarshal([]byte("FOO=" + deepPattern))
 		if err == nil {
 			t.Fatal("expected an error for a deeply nested pattern")
 		}
@@ -1015,7 +1038,7 @@ func TestExpansionNestingIsBounded(t *testing.T) {
 	t.Run("replace replacement", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := godotenv.New(godotenv.WithBash()).Unmarshal("A=x\nFOO=${A/a/" + deep + "}")
+		_, err := godotenv.New(godotenv.WithBash()).Unmarshal([]byte("A=x\nFOO=${A/a/" + deep + "}"))
 		if err == nil {
 			t.Fatal("expected an error for a deeply nested replacement")
 		}
@@ -1027,7 +1050,7 @@ func TestExpansionNestingIsBounded(t *testing.T) {
 	t.Run("replace replacement column", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := godotenv.New(godotenv.WithBash()).Unmarshal("A=x\nFOO=${A/a/" + deep + "}")
+		_, err := godotenv.New(godotenv.WithBash()).Unmarshal([]byte("A=x\nFOO=${A/a/" + deep + "}"))
 		if err == nil {
 			t.Fatal("expected an error for a deeply nested replacement")
 		}
@@ -1041,7 +1064,7 @@ func TestExpansionNestingIsBounded(t *testing.T) {
 func TestQuotedCloseBraceInExpansion(t *testing.T) {
 	t.Parallel()
 
-	got, err := godotenv.Unmarshal(`FOO=${GODOTENV_TEST_UNSET_VARIABLE:-"}"}`)
+	got, err := godotenv.Unmarshal([]byte(`FOO=${GODOTENV_TEST_UNSET_VARIABLE:-"}"}`))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1053,7 +1076,7 @@ func TestQuotedCloseBraceInExpansion(t *testing.T) {
 func TestLengthOperatorWithModifierErrors(t *testing.T) {
 	t.Parallel()
 
-	if _, err := godotenv.Unmarshal(`FOO=${#GODOTENV_TEST_UNSET_VARIABLE:-xyz}`); err == nil {
+	if _, err := godotenv.Unmarshal([]byte(`FOO=${#GODOTENV_TEST_UNSET_VARIABLE:-xyz}`)); err == nil {
 		t.Fatal("expected an error")
 	}
 }
@@ -1137,7 +1160,7 @@ func TestParameterPatternsAndSubstrings(t *testing.T) {
 			if tt.bash {
 				opts = append(opts, godotenv.WithBash())
 			}
-			got, err := godotenv.New(opts...).Unmarshal(tt.input)
+			got, err := godotenv.New(opts...).Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1165,7 +1188,7 @@ func TestSubstringBounds(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Unmarshal(tt.input)
+			got, err := godotenv.Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1209,7 +1232,7 @@ func TestSubstringArithmetic(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Unmarshal(tt.input)
+			got, err := godotenv.Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1237,7 +1260,7 @@ func TestSubstringArithmeticRecursionIsBounded(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if _, err := godotenv.Unmarshal(tt.input); err == nil {
+			if _, err := godotenv.Unmarshal([]byte(tt.input)); err == nil {
 				t.Fatal("expected an error, got none")
 			}
 		})
@@ -1248,7 +1271,7 @@ func TestSubstringArithmeticRecursionIsBounded(t *testing.T) {
 
 		input := "z=abcdef\nFOO=${z:" + strings.Repeat("(", 500) + "0" + strings.Repeat(")", 500) + ":1}"
 
-		got, err := godotenv.Unmarshal(input)
+		got, err := godotenv.Unmarshal([]byte(input))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1261,7 +1284,7 @@ func TestSubstringArithmeticRecursionIsBounded(t *testing.T) {
 func TestUnterminatedGlobClass(t *testing.T) {
 	t.Parallel()
 
-	got, err := godotenv.Unmarshal("A=[abcx\nFOO=${A#[abc}")
+	got, err := godotenv.Unmarshal([]byte("A=[abcx\nFOO=${A#[abc}"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1293,7 +1316,7 @@ func TestReplacePatternLeadingSlash(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tt.input)
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1327,7 +1350,7 @@ func TestANSICQuoting(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tt.input)
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1369,7 +1392,7 @@ func TestANSICBracedHexEscapes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tt.input)
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1408,9 +1431,9 @@ func TestSingleQuoteInsideBracedExpansionInDoubleQuotes(t *testing.T) {
 				err error
 			)
 			if tt.bash {
-				got, err = godotenv.New(godotenv.WithBash()).Parse(strings.NewReader(tt.input))
+				got, err = godotenv.New(godotenv.WithBash()).Decode(strings.NewReader(tt.input))
 			} else {
-				got, err = godotenv.ParseWithLookup(strings.NewReader(tt.input), lookup)
+				got, err = godotenv.New(godotenv.WithLookup(lookup)).Decode(strings.NewReader(tt.input))
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -1474,9 +1497,9 @@ func TestDoubleQuotedBracedWordOperand(t *testing.T) {
 				err error
 			)
 			if tt.bash {
-				got, err = godotenv.New(godotenv.WithBash()).Parse(strings.NewReader(tt.input))
+				got, err = godotenv.New(godotenv.WithBash()).Decode(strings.NewReader(tt.input))
 			} else {
-				got, err = godotenv.ParseWithLookup(strings.NewReader(tt.input), lookup)
+				got, err = godotenv.New(godotenv.WithLookup(lookup)).Decode(strings.NewReader(tt.input))
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -1506,7 +1529,7 @@ func TestUnicodeEscapeInDoubleQuotes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tt.input)
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1534,7 +1557,7 @@ func TestDoubleQuoteBellAndVerticalTab(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.New(tt.opts...).Unmarshal(tt.input)
+			got, err := godotenv.New(tt.opts...).Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1582,7 +1605,7 @@ func TestMarshalEscapesShellSpecials(t *testing.T) {
 	}
 
 	for _, special := range []string{"$", "`"} {
-		if strings.Contains(strings.ReplaceAll(out, "\\"+special, ""), special) {
+		if strings.Contains(strings.ReplaceAll(string(out), "\\"+special, ""), special) {
 			t.Errorf("output leaves %q unescaped, so sourcing it would expand:\n%s", special, out)
 		}
 	}
@@ -1622,7 +1645,7 @@ func TestPOSIXDefaults(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.New().Unmarshal(tt.input)
+			got, err := godotenv.New().Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1657,7 +1680,7 @@ func TestWithBash(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tt.input)
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1686,7 +1709,7 @@ func TestReplacementFamilyInDefaultMode(t *testing.T) {
 			t.Parallel()
 
 			for _, opts := range [][]godotenv.Option{nil, {godotenv.WithBash()}} {
-				got, err := godotenv.New(opts...).Unmarshal(tt.input)
+				got, err := godotenv.New(opts...).Unmarshal([]byte(tt.input))
 				if err != nil {
 					t.Fatalf("Unmarshal(%q): %v", tt.input, err)
 				}
@@ -1733,7 +1756,7 @@ func TestArithmeticExpansion(t *testing.T) {
 			t.Run(mode.name+"/"+tt.name, func(t *testing.T) {
 				t.Parallel()
 
-				got, err := godotenv.New(mode.opts...).Unmarshal(tt.input)
+				got, err := godotenv.New(mode.opts...).Unmarshal([]byte(tt.input))
 				if tt.wantErr {
 					if err == nil {
 						t.Fatal("expected an error, got nil")
@@ -1754,11 +1777,11 @@ func TestArithmeticExpansion(t *testing.T) {
 func TestArithmeticEmpty(t *testing.T) {
 	t.Parallel()
 
-	if _, err := godotenv.Unmarshal("FOO=$(( ))"); err == nil {
+	if _, err := godotenv.Unmarshal([]byte("FOO=$(( ))")); err == nil {
 		t.Error("posix: expected an error for empty arithmetic")
 	}
 
-	got, err := godotenv.New(godotenv.WithBash()).Unmarshal("FOO=$(( ))")
+	got, err := godotenv.New(godotenv.WithBash()).Unmarshal([]byte("FOO=$(( ))"))
 	if err != nil {
 		t.Fatalf("bash: unexpected error: %v", err)
 	}
@@ -1833,7 +1856,7 @@ func TestPOSIXMatchesDash(t *testing.T) {
 			if !ok {
 				t.Fatalf("dash failed: %s", tc.script)
 			}
-			got, err := godotenv.ParseWithLookup(strings.NewReader(tc.input), lookup)
+			got, err := godotenv.New(godotenv.WithLookup(lookup)).Decode(strings.NewReader(tc.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1850,7 +1873,7 @@ func TestPOSIXMatchesDash(t *testing.T) {
 			t.Fatal("dash unexpectedly accepted a replacement")
 		}
 
-		got, err := godotenv.ParseWithLookup(strings.NewReader("A=abc\nFOO=${A/b/X}"), lookup)
+		got, err := godotenv.New(godotenv.WithLookup(lookup)).Decode(strings.NewReader("A=abc\nFOO=${A/b/X}"))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1889,7 +1912,7 @@ func TestBashMatchesBash(t *testing.T) {
 			if !ok {
 				t.Fatalf("bash failed: %s", tc.script)
 			}
-			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tc.input)
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal([]byte(tc.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1943,7 +1966,7 @@ func TestExpand(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Expand(tt.in, lookup, tt.opts...)
+			got, err := godotenv.New(append([]godotenv.Option{godotenv.WithLookup(lookup)}, tt.opts...)...).Expand(tt.in)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected an error, got nil")
@@ -1978,7 +2001,7 @@ func TestLineContinuationWithCRLF(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.New(tt.opts...).Unmarshal(tt.input)
+			got, err := godotenv.New(tt.opts...).Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -2009,7 +2032,7 @@ func TestLineEndings(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Unmarshal(tt.input)
+			got, err := godotenv.Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -2038,7 +2061,7 @@ func TestANSICQuotingContext(t *testing.T) {
 		t.Run("posix "+tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Unmarshal(tt.input)
+			got, err := godotenv.Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -2063,7 +2086,7 @@ func TestANSICQuotingContext(t *testing.T) {
 		t.Run("bash "+tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tt.input)
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal([]byte(tt.input))
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -2078,7 +2101,7 @@ func TestErrorReadDirectory(t *testing.T) {
 	t.Parallel()
 
 	envFileName := "fixtures/"
-	envMap, err := godotenv.Read(envFileName)
+	envMap, err := readFiles(envFileName)
 	if err == nil {
 		t.Errorf("Expected error, got %v: %s", envMap, err)
 	}
@@ -2088,7 +2111,7 @@ func TestErrorParsing(t *testing.T) {
 	t.Parallel()
 
 	envFileName := "fixtures/invalid1.env"
-	envMap, err := godotenv.Read(envFileName)
+	envMap, err := readFiles(envFileName)
 	if err == nil {
 		t.Errorf("Expected error, got %v: %s", envMap, err)
 	}
@@ -2133,7 +2156,7 @@ func TestParseErrorMessages(t *testing.T) {
 			if tt.bash {
 				opts = append(opts, godotenv.WithBash())
 			}
-			_, err := godotenv.New(opts...).Unmarshal(tt.input)
+			_, err := godotenv.New(opts...).Unmarshal([]byte(tt.input))
 			if err == nil {
 				t.Fatalf("expected an error for %q", tt.input)
 			}
@@ -2146,7 +2169,7 @@ func TestParseErrorMessages(t *testing.T) {
 	t.Run("error format is a single line", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := godotenv.Unmarshal("A=1\nB C=2")
+		_, err := godotenv.Unmarshal([]byte("A=1\nB C=2"))
 		if err == nil {
 			t.Fatal("expected an error")
 		}
@@ -2158,9 +2181,9 @@ func TestParseErrorMessages(t *testing.T) {
 	t.Run("unbound variable in Expand", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := godotenv.Expand("$GODOTENV_TEST_UNSET_VARIABLE", func([]byte) ([]byte, bool) {
+		_, err := godotenv.New(godotenv.WithLookup(func([]byte) ([]byte, bool) {
 			return nil, false
-		}, godotenv.WithUnboundError())
+		}), godotenv.WithUnboundError()).Expand("$GODOTENV_TEST_UNSET_VARIABLE")
 		if err == nil {
 			t.Fatal("expected an error")
 		}
@@ -2174,7 +2197,7 @@ func TestParseErrorMessages(t *testing.T) {
 
 		const unset = "GODOTENV_TEST_UNSET_VARIABLE"
 
-		_, err := godotenv.New(godotenv.WithUnboundError()).Unmarshal("A=${" + unset + ":-${" + unset + "}")
+		_, err := godotenv.New(godotenv.WithUnboundError()).Unmarshal([]byte("A=${" + unset + ":-${" + unset + "}"))
 		if err == nil {
 			t.Fatal("expected an error")
 		}
@@ -2187,7 +2210,7 @@ func TestParseErrorMessages(t *testing.T) {
 func TestParseErrorControlCharacter(t *testing.T) {
 	t.Parallel()
 
-	_, err := godotenv.Unmarshal("FOO=a\x01b")
+	_, err := godotenv.Unmarshal([]byte("FOO=a\x01b"))
 	if err == nil {
 		t.Fatal("expected an error for the control character")
 	}
@@ -2236,9 +2259,9 @@ func TestWrite(t *testing.T) {
 			if tt.bash {
 				opts = append(opts, godotenv.WithBash())
 			}
-			envMap, _ := godotenv.New(opts...).Unmarshal(tt.env)
+			envMap, _ := godotenv.New(opts...).Unmarshal([]byte(tt.env))
 			actual, _ := godotenv.Marshal(envMap)
-			if tt.expected != actual {
+			if tt.expected != string(actual) {
 				t.Errorf("Expected '%v' (%v) to write as '%v', got '%v' instead.", tt.env, envMap, tt.expected, actual)
 			}
 		})
@@ -2277,7 +2300,7 @@ func TestWriteReadRoundTrip(t *testing.T) {
 		}
 	}
 
-	got, err := godotenv.New(godotenv.WithBash()).Read(name)
+	got, err := decodeFile(godotenv.New(godotenv.WithBash()), name)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -2297,7 +2320,7 @@ func BenchmarkParse(b *testing.B) {
 	b.SetBytes(int64(len(data)))
 
 	for b.Loop() {
-		if _, err := godotenv.Unmarshal(data); err != nil {
+		if _, err := godotenv.Unmarshal([]byte(data)); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -2312,7 +2335,7 @@ func BenchmarkReplaceAll(b *testing.B) {
 			b.SetBytes(int64(size))
 
 			for b.Loop() {
-				if _, err := godotenv.Unmarshal(input); err != nil {
+				if _, err := godotenv.Unmarshal([]byte(input)); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -2337,7 +2360,7 @@ func BenchmarkWildcardNoMatch(b *testing.B) {
 	for _, tc := range cases {
 		b.Run(tc.name, func(b *testing.B) {
 			for b.Loop() {
-				if _, err := godotenv.Unmarshal(tc.input); err != nil {
+				if _, err := godotenv.Unmarshal([]byte(tc.input)); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -2378,7 +2401,7 @@ func FuzzUnmarshal(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, input string) {
-		env, err := godotenv.Unmarshal(input)
+		env, err := godotenv.Unmarshal([]byte(input))
 		if err != nil {
 			_ = err.Error()
 			return
@@ -2424,7 +2447,7 @@ func FuzzExpand(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, input string) {
-		if _, err := godotenv.Expand(input, lookup); err != nil {
+		if _, err := godotenv.New(godotenv.WithLookup(lookup)).Expand(input); err != nil {
 			_ = err.Error()
 		}
 	})
@@ -2440,7 +2463,7 @@ func TestRoundTrip(t *testing.T) {
 
 			loader := godotenv.New(godotenv.WithBash())
 			fixtureFilename := fmt.Sprintf("fixtures/%s", fixture)
-			env, err := loader.Read(fixtureFilename)
+			env, err := decodeFile(loader, fixtureFilename)
 			if err != nil {
 				t.Errorf("Expected '%s' to read without error (%v)", fixtureFilename, err)
 			}

@@ -105,31 +105,6 @@ func TestMatch(t *testing.T) {
 	}
 }
 
-func TestMatchString(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		pattern string
-		s       string
-		want    bool
-	}{
-		{name: "match", pattern: "a*c", s: "abc", want: true},
-		{name: "no match", pattern: "a*c", s: "abd", want: false},
-		{name: "empty", pattern: "", s: "", want: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			if got := glob.MatchString(tt.pattern, tt.s); got != tt.want {
-				t.Errorf("MatchString(%q, %q) = %v, want %v", tt.pattern, tt.s, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestMatchPrefix(t *testing.T) {
 	t.Parallel()
 
@@ -137,60 +112,60 @@ func TestMatchPrefix(t *testing.T) {
 		name    string
 		pattern string
 		s       string
-		wantN   int
+		wantEnd int
 		wantOK  bool
 	}{
-		{name: "literal prefix", pattern: "abc", s: "abcdef", wantN: 3, wantOK: true},
-		{name: "literal not prefix", pattern: "abc", s: "ab", wantN: 0, wantOK: false},
-		{name: "literal mismatch", pattern: "abc", s: "xabc", wantN: 0, wantOK: false},
-		{name: "empty pattern", pattern: "", s: "abc", wantN: 0, wantOK: true},
-		{name: "empty both", pattern: "", s: "", wantN: 0, wantOK: true},
-		{name: "star whole", pattern: "*", s: "abc", wantN: 3, wantOK: true},
-		{name: "star empty", pattern: "*", s: "", wantN: 0, wantOK: true},
-		{name: "star prefix", pattern: "a*", s: "abc", wantN: 3, wantOK: true},
-		{name: "star prefix exact", pattern: "a*", s: "a", wantN: 1, wantOK: true},
-		{name: "star prefix mismatch", pattern: "x*", s: "abc", wantN: 0, wantOK: false},
-		{name: "star prefix not at start", pattern: "a*", s: "ba", wantN: 0, wantOK: false},
-		{name: "star suffix", pattern: "*c", s: "abc", wantN: 3, wantOK: true},
-		{name: "star suffix absent", pattern: "*x", s: "abc", wantN: 0, wantOK: false},
-		{name: "star middle", pattern: "a*c", s: "abc", wantN: 3, wantOK: true},
-		{name: "star middle longer", pattern: "a*c", s: "abcd", wantN: 3, wantOK: true},
-		{name: "star middle empty", pattern: "a*c", s: "ac", wantN: 2, wantOK: true},
-		{name: "star middle mismatch", pattern: "a*c", s: "abd", wantN: 0, wantOK: false},
-		{name: "star middle prefix absent", pattern: "a*c", s: "xbc", wantN: 0, wantOK: false},
-		{name: "star middle not at start", pattern: "a*c", s: "xac", wantN: 0, wantOK: false},
-		{name: "star suffix absent longer", pattern: "*x", s: "abcx", wantN: 4, wantOK: true},
-		{name: "star last occurrence", pattern: "a*b", s: "aXbYb", wantN: 5, wantOK: true},
-		{name: "star last occurrence exact", pattern: "a*b", s: "ab", wantN: 2, wantOK: true},
-		{name: "star last occurrence one", pattern: "a*b", s: "aXb", wantN: 3, wantOK: true},
-		{name: "star last occurrence absent", pattern: "a*b", s: "aX", wantN: 0, wantOK: false},
-		{name: "star both sides", pattern: "*a*", s: "ba", wantN: 2, wantOK: true},
-		{name: "star both sides prefix", pattern: "*a*", s: "ab", wantN: 2, wantOK: true},
-		{name: "star both sides absent", pattern: "*a*", s: "b", wantN: 0, wantOK: false},
-		{name: "star both sides empty", pattern: "*a*", s: "", wantN: 0, wantOK: false},
-		{name: "question", pattern: "?", s: "abc", wantN: 1, wantOK: true},
-		{name: "question empty", pattern: "?", s: "", wantN: 0, wantOK: false},
-		{name: "question multibyte", pattern: "?", s: "é", wantN: 2, wantOK: true},
-		{name: "question multibyte longer", pattern: "?", s: "éx", wantN: 2, wantOK: true},
-		{name: "question middle", pattern: "a?c", s: "abcd", wantN: 3, wantOK: true},
-		{name: "question middle missing", pattern: "a?c", s: "ac", wantN: 0, wantOK: false},
-		{name: "multiple stars", pattern: "a*b*c", s: "axbyc", wantN: 5, wantOK: true},
-		{name: "multiple stars trailing", pattern: "a*b*c", s: "axbycd", wantN: 5, wantOK: true},
-		{name: "class", pattern: "[a-z]*", s: "abc", wantN: 3, wantOK: true},
-		{name: "class mismatch", pattern: "[a-z]*", s: "1bc", wantN: 0, wantOK: false},
-		{name: "escaped star", pattern: `a\*b`, s: "a*bc", wantN: 3, wantOK: true},
-		{name: "escaped star mismatch", pattern: `a\*b`, s: "axbc", wantN: 0, wantOK: false},
-		{name: "fast path run absent", pattern: "a*b", s: "xyz", wantN: 0, wantOK: false},
+		{name: "literal prefix", pattern: "abc", s: "abcdef", wantEnd: 3, wantOK: true},
+		{name: "literal not prefix", pattern: "abc", s: "ab", wantEnd: 0, wantOK: false},
+		{name: "literal mismatch", pattern: "abc", s: "xabc", wantEnd: 0, wantOK: false},
+		{name: "empty pattern", pattern: "", s: "abc", wantEnd: 0, wantOK: true},
+		{name: "empty both", pattern: "", s: "", wantEnd: 0, wantOK: true},
+		{name: "star whole", pattern: "*", s: "abc", wantEnd: 3, wantOK: true},
+		{name: "star empty", pattern: "*", s: "", wantEnd: 0, wantOK: true},
+		{name: "star prefix", pattern: "a*", s: "abc", wantEnd: 3, wantOK: true},
+		{name: "star prefix exact", pattern: "a*", s: "a", wantEnd: 1, wantOK: true},
+		{name: "star prefix mismatch", pattern: "x*", s: "abc", wantEnd: 0, wantOK: false},
+		{name: "star prefix not at start", pattern: "a*", s: "ba", wantEnd: 0, wantOK: false},
+		{name: "star suffix", pattern: "*c", s: "abc", wantEnd: 3, wantOK: true},
+		{name: "star suffix absent", pattern: "*x", s: "abc", wantEnd: 0, wantOK: false},
+		{name: "star middle", pattern: "a*c", s: "abc", wantEnd: 3, wantOK: true},
+		{name: "star middle longer", pattern: "a*c", s: "abcd", wantEnd: 3, wantOK: true},
+		{name: "star middle empty", pattern: "a*c", s: "ac", wantEnd: 2, wantOK: true},
+		{name: "star middle mismatch", pattern: "a*c", s: "abd", wantEnd: 0, wantOK: false},
+		{name: "star middle prefix absent", pattern: "a*c", s: "xbc", wantEnd: 0, wantOK: false},
+		{name: "star middle not at start", pattern: "a*c", s: "xac", wantEnd: 0, wantOK: false},
+		{name: "star suffix absent longer", pattern: "*x", s: "abcx", wantEnd: 4, wantOK: true},
+		{name: "star last occurrence", pattern: "a*b", s: "aXbYb", wantEnd: 5, wantOK: true},
+		{name: "star last occurrence exact", pattern: "a*b", s: "ab", wantEnd: 2, wantOK: true},
+		{name: "star last occurrence one", pattern: "a*b", s: "aXb", wantEnd: 3, wantOK: true},
+		{name: "star last occurrence absent", pattern: "a*b", s: "aX", wantEnd: 0, wantOK: false},
+		{name: "star both sides", pattern: "*a*", s: "ba", wantEnd: 2, wantOK: true},
+		{name: "star both sides prefix", pattern: "*a*", s: "ab", wantEnd: 2, wantOK: true},
+		{name: "star both sides absent", pattern: "*a*", s: "b", wantEnd: 0, wantOK: false},
+		{name: "star both sides empty", pattern: "*a*", s: "", wantEnd: 0, wantOK: false},
+		{name: "question", pattern: "?", s: "abc", wantEnd: 1, wantOK: true},
+		{name: "question empty", pattern: "?", s: "", wantEnd: 0, wantOK: false},
+		{name: "question multibyte", pattern: "?", s: "é", wantEnd: 2, wantOK: true},
+		{name: "question multibyte longer", pattern: "?", s: "éx", wantEnd: 2, wantOK: true},
+		{name: "question middle", pattern: "a?c", s: "abcd", wantEnd: 3, wantOK: true},
+		{name: "question middle missing", pattern: "a?c", s: "ac", wantEnd: 0, wantOK: false},
+		{name: "multiple stars", pattern: "a*b*c", s: "axbyc", wantEnd: 5, wantOK: true},
+		{name: "multiple stars trailing", pattern: "a*b*c", s: "axbycd", wantEnd: 5, wantOK: true},
+		{name: "class", pattern: "[a-z]*", s: "abc", wantEnd: 3, wantOK: true},
+		{name: "class mismatch", pattern: "[a-z]*", s: "1bc", wantEnd: 0, wantOK: false},
+		{name: "escaped star", pattern: `a\*b`, s: "a*bc", wantEnd: 3, wantOK: true},
+		{name: "escaped star mismatch", pattern: `a\*b`, s: "axbc", wantEnd: 0, wantOK: false},
+		{name: "fast path run absent", pattern: "a*b", s: "xyz", wantEnd: 0, wantOK: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			n, ok := glob.MatchPrefix([]byte(tt.pattern), []byte(tt.s))
-			if n != tt.wantN || ok != tt.wantOK {
-				t.Errorf("MatchPrefix(%q, %q) = (%d, %v), want (%d, %v)",
-					tt.pattern, tt.s, n, ok, tt.wantN, tt.wantOK)
+			start, end, ok := glob.MatchPrefix([]byte(tt.pattern), []byte(tt.s))
+			if start != 0 || end != tt.wantEnd || ok != tt.wantOK {
+				t.Errorf("MatchPrefix(%q, %q) = (%d, %d, %v), want (0, %d, %v)",
+					tt.pattern, tt.s, start, end, ok, tt.wantEnd, tt.wantOK)
 			}
 		})
 	}
@@ -203,43 +178,47 @@ func TestMatchSuffix(t *testing.T) {
 		name    string
 		pattern string
 		s       string
-		wantN   int
+		wantEnd int
 		wantOK  bool
 	}{
-		{name: "literal suffix", pattern: "abc", s: "xabc", wantN: 3, wantOK: true},
-		{name: "literal not suffix", pattern: "abc", s: "abcx", wantN: 0, wantOK: false},
-		{name: "empty pattern", pattern: "", s: "abc", wantN: 0, wantOK: true},
-		{name: "empty both", pattern: "", s: "", wantN: 0, wantOK: true},
-		{name: "star whole", pattern: "*", s: "abc", wantN: 3, wantOK: true},
-		{name: "star empty", pattern: "*", s: "", wantN: 0, wantOK: true},
-		{name: "star suffix", pattern: "*c", s: "abc", wantN: 3, wantOK: true},
-		{name: "star suffix absent", pattern: "*x", s: "abc", wantN: 0, wantOK: false},
-		{name: "star prefix", pattern: "a*", s: "xabc", wantN: 3, wantOK: true},
-		{name: "star prefix exact", pattern: "a*", s: "abc", wantN: 3, wantOK: true},
-		{name: "star prefix absent", pattern: "a*", s: "xbc", wantN: 0, wantOK: false},
-		{name: "star middle", pattern: "a*c", s: "xabc", wantN: 3, wantOK: true},
-		{name: "star middle absent", pattern: "a*c", s: "xabd", wantN: 0, wantOK: false},
-		{name: "star both sides", pattern: "*b*", s: "abc", wantN: 3, wantOK: true},
-		{name: "star both sides absent", pattern: "*b*", s: "ac", wantN: 0, wantOK: false},
-		{name: "question", pattern: "?", s: "abc", wantN: 1, wantOK: true},
-		{name: "question empty", pattern: "?", s: "", wantN: 0, wantOK: false},
-		{name: "question multibyte", pattern: "?", s: "é", wantN: 2, wantOK: true},
-		{name: "question middle", pattern: "a?c", s: "xabc", wantN: 3, wantOK: true},
-		{name: "question middle absent", pattern: "a?c", s: "abcx", wantN: 0, wantOK: false},
-		{name: "class", pattern: "[a-z]", s: "ab", wantN: 1, wantOK: true},
-		{name: "class absent", pattern: "[a-z]", s: "a1", wantN: 0, wantOK: false},
-		{name: "escaped star", pattern: `a\*b`, s: "xa*b", wantN: 3, wantOK: true},
-		{name: "fast path run absent", pattern: "a*b", s: "xyz", wantN: 0, wantOK: false},
+		{name: "literal suffix", pattern: "abc", s: "xabc", wantEnd: 3, wantOK: true},
+		{name: "literal not suffix", pattern: "abc", s: "abcx", wantEnd: 0, wantOK: false},
+		{name: "empty pattern", pattern: "", s: "abc", wantEnd: 0, wantOK: true},
+		{name: "empty both", pattern: "", s: "", wantEnd: 0, wantOK: true},
+		{name: "star whole", pattern: "*", s: "abc", wantEnd: 3, wantOK: true},
+		{name: "star empty", pattern: "*", s: "", wantEnd: 0, wantOK: true},
+		{name: "star suffix", pattern: "*c", s: "abc", wantEnd: 3, wantOK: true},
+		{name: "star suffix absent", pattern: "*x", s: "abc", wantEnd: 0, wantOK: false},
+		{name: "star prefix", pattern: "a*", s: "xabc", wantEnd: 3, wantOK: true},
+		{name: "star prefix exact", pattern: "a*", s: "abc", wantEnd: 3, wantOK: true},
+		{name: "star prefix absent", pattern: "a*", s: "xbc", wantEnd: 0, wantOK: false},
+		{name: "star middle", pattern: "a*c", s: "xabc", wantEnd: 3, wantOK: true},
+		{name: "star middle absent", pattern: "a*c", s: "xabd", wantEnd: 0, wantOK: false},
+		{name: "star both sides", pattern: "*b*", s: "abc", wantEnd: 3, wantOK: true},
+		{name: "star both sides absent", pattern: "*b*", s: "ac", wantEnd: 0, wantOK: false},
+		{name: "question", pattern: "?", s: "abc", wantEnd: 1, wantOK: true},
+		{name: "question empty", pattern: "?", s: "", wantEnd: 0, wantOK: false},
+		{name: "question multibyte", pattern: "?", s: "é", wantEnd: 2, wantOK: true},
+		{name: "question middle", pattern: "a?c", s: "xabc", wantEnd: 3, wantOK: true},
+		{name: "question middle absent", pattern: "a?c", s: "abcx", wantEnd: 0, wantOK: false},
+		{name: "class", pattern: "[a-z]", s: "ab", wantEnd: 1, wantOK: true},
+		{name: "class absent", pattern: "[a-z]", s: "a1", wantEnd: 0, wantOK: false},
+		{name: "escaped star", pattern: `a\*b`, s: "xa*b", wantEnd: 3, wantOK: true},
+		{name: "fast path run absent", pattern: "a*b", s: "xyz", wantEnd: 0, wantOK: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			n, ok := glob.MatchSuffix([]byte(tt.pattern), []byte(tt.s))
-			if n != tt.wantN || ok != tt.wantOK {
-				t.Errorf("MatchSuffix(%q, %q) = (%d, %v), want (%d, %v)",
-					tt.pattern, tt.s, n, ok, tt.wantN, tt.wantOK)
+			start, end, ok := glob.MatchSuffix([]byte(tt.pattern), []byte(tt.s))
+			wantStart, wantEnd := 0, 0
+			if tt.wantOK {
+				wantStart, wantEnd = len(tt.s)-tt.wantEnd, len(tt.s)
+			}
+			if start != wantStart || end != wantEnd || ok != tt.wantOK {
+				t.Errorf("MatchSuffix(%q, %q) = (%d, %d, %v), want (%d, %d, %v)",
+					tt.pattern, tt.s, start, end, ok, wantStart, wantEnd, tt.wantOK)
 			}
 		})
 	}

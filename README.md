@@ -122,39 +122,50 @@ export BAR=BAZ
 as a final aside, if you don't want godotenv munging your env you can just get a map back instead
 
 ```go
-var myEnv map[string]string
-myEnv, err := godotenv.Read()
+file, err := os.Open(".env")
+if err != nil {
+    log.Fatal(err)
+}
+defer file.Close()
+
+myEnv, err := godotenv.Decode(file)
 
 s3Bucket := myEnv["S3_BUCKET"]
 ```
 
-... or from an `io.Reader` instead of a local file
+... or from any `io.Reader`, not just a local file
 
 ```go
 reader := getRemoteFile()
-myEnv, err := godotenv.Parse(reader)
+myEnv, err := godotenv.Decode(reader)
 ```
 
-... or from a `string` if you so desire
+... or from a `[]byte` if you so desire
 
 ```go
-content := getRemoteFileContent()
-myEnv, err := godotenv.Unmarshal(content)
+data := getRemoteFileContent()
+myEnv, err := godotenv.Unmarshal(data)
 ```
 
 ### Options
 
 `godotenv.New` returns a `*Loader` that you configure once and reuse across
-`Load`, `Read`, `Parse` and `Unmarshal`:
+`Load`, `Decode`, `Unmarshal` and `Expand`:
 
 ```go
 loader := godotenv.New(godotenv.WithBash())
 
-env, err := loader.Read(".env")
+file, err := os.Open(".env")
+if err != nil {
+    log.Fatal(err)
+}
+defer file.Close()
+
+env, err := loader.Decode(file)
 ```
 
 By default the parser follows strict POSIX shell rules with some exceptions.
-There are three options:
+There are four options:
 
 - `WithUnboundError()`: an unset `$VAR` or `${VAR}` returns an error instead of
   expanding to an empty string. This is the equivalent of `set -u`.
@@ -167,9 +178,13 @@ There are three options:
     `"\t"` is a tab.
 - `WithOverride()`: `Load` overwrites variables already set in the process
   environment, so the files win instead of the environment.
+- `WithLookup()`: the function used to resolve a reference to a variable not
+  defined earlier in the parsed content. By default the process environment is
+  used.
 
-The package-level `Load`, `Read`, `Parse`, `Unmarshal` and
-`ParseWithLookup` functions use the default (POSIX) behaviour.
+The package-level `Load`, `Decode`, `Unmarshal` and `Expand` functions use the
+default (POSIX) behaviour and the process environment. Create a `Loader` with
+`New` to change either.
 
 ### Shell Semantics
 
@@ -218,14 +233,21 @@ sits directly inside the double quotes.
 that are not `.env` syntax:
 
 ```go
-out, err := godotenv.Expand("token=${API_KEY}", godotenv.LookupEnv)
+out, err := godotenv.Expand("token=${API_KEY}")
 ```
 
-Only `$NAME` and `${...}` are interpreted. It takes the same options as `New`:
+Only `$NAME` and `${...}` are interpreted, against the process environment. For
+a custom lookup or other options, use a `Loader`:
+
+```go
+loader := godotenv.New(godotenv.WithLookup(myLookup), godotenv.WithUnboundError())
+out, err := loader.Expand("token=${API_KEY}")
+```
+
 `WithUnboundError()` makes an unset variable with no modifier an error instead
 of the empty string, and `WithBash()` enables the `$'...'` and `$"..."` forms.
-`$((...))` is left as written. `LookupEnvFunc` is the lookup signature shared by
-`Expand` and `ParseWithLookup`.
+`$((...))` is left as written. `LookupEnvFunc` is the lookup signature taken by
+`WithLookup`.
 
 ### Precedence & Conventions
 
@@ -234,9 +256,7 @@ specified files. It leaves anything already set in the alone, so previously
 environment variables stay. You can use `WithOverride()` to override this.
 
 Within one call, files are read in the order you give them. If the same key
-appears in more than one file, the value from the last file is used. `Read`
-returns that same merged result as a map instead of writing to the process
-environment.
+appears in more than one file, the value from the last file is used.
 
 Key names must match `[A-Za-z_][A-Za-z0-9_]*`; in particular they cannot
 contain `-` or `.`.
@@ -283,14 +303,14 @@ Godotenv can also write a map back to a correctly formatted and escaped file. Va
 Because control characters are written with C-style escapes, reading such a file back needs `WithBash()`; the default POSIX parser keeps those backslashes literal.
 
 ```go
-env, err := godotenv.Unmarshal("KEY=value")
+env, err := godotenv.Unmarshal([]byte("KEY=value"))
 err = godotenv.Write(env, "./.env")
 ```
 
-... or to a string
+... or to bytes
 
 ```go
-env, err := godotenv.Unmarshal("KEY=value")
+env, err := godotenv.Unmarshal([]byte("KEY=value"))
 content, err := godotenv.Marshal(env)
 ```
 

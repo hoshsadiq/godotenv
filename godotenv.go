@@ -21,43 +21,6 @@ import (
 	"strings"
 )
 
-// Option configures a Loader created with New.
-type Option func(*config)
-
-type config struct {
-	unboundErr bool
-	bash       bool
-	restricted bool
-	override   bool
-}
-
-// WithUnboundError makes an unset variable reference ($VAR or ${VAR}) return an
-// error instead of expanding to an empty string.
-func WithUnboundError() Option {
-	return func(c *config) {
-		c.unboundErr = true
-	}
-}
-
-// WithBash enables the bash extensions on top of the POSIX defaults: ANSI-C
-// quoting ($'...', including \x{}, \u{} and \U{}), translation quoting ($"..."),
-// the ${var/pat/rep} replacement family (/, //, /# and /%) and dotenv-style
-// backslash escapes inside "..." such as \n and \t. Without this option the
-// parser follows strict POSIX rules, where all of those are literal text.
-func WithBash() Option {
-	return func(c *config) {
-		c.bash = true
-	}
-}
-
-// WithOverride makes Load overwrite variables already set in the process
-// environment, so the files win instead of the environment.
-func WithOverride() Option {
-	return func(c *config) {
-		c.override = true
-	}
-}
-
 // Loader loads and parses .env content using the options passed to New.
 type Loader struct {
 	cfg config
@@ -79,19 +42,19 @@ func (l *Loader) Load(filenames ...string) error {
 	return loadFile(l.cfg, filenames, l.cfg.override)
 }
 
-// Read returns the variables from the given files as a map.
-func (l *Loader) Read(filenames ...string) (map[string]string, error) {
-	return readFiles(l.cfg, filenames)
+// Decode reads env content from r and returns the variables as a map.
+func (l *Loader) Decode(r io.Reader) (map[string]string, error) {
+	return parseConfig(r, l.cfg)
 }
 
-// Parse reads env content from r and returns the variables as a map.
-func (l *Loader) Parse(r io.Reader) (map[string]string, error) {
-	return parseConfig(r, l.cfg, LookupEnv)
+// Unmarshal parses env content from data and returns the variables as a map.
+func (l *Loader) Unmarshal(data []byte) (map[string]string, error) {
+	return parseBytes(data, l.cfg)
 }
 
-// Unmarshal parses env content from a string and returns the variables as a map.
-func (l *Loader) Unmarshal(str string) (map[string]string, error) {
-	return l.Parse(strings.NewReader(str))
+// Expand resolves references in s using the loader's lookup and options.
+func (l *Loader) Expand(s string) (string, error) {
+	return expandString(s, l.cfg)
 }
 
 // Load will read your env file(s) and load them into ENV for this process.
@@ -106,31 +69,42 @@ func Load(filenames ...string) (err error) {
 	return loadFile(config{}, filenames, false)
 }
 
-// Read all env (with same file loading semantics as Load) but return values as
-// a map rather than automatically writing values into env
-func Read(filenames ...string) (envMap map[string]string, err error) {
-	return readFiles(config{}, filenames)
+// Decode reads an env file from io.Reader, returning a map of keys and values.
+func Decode(r io.Reader) (envMap map[string]string, err error) {
+	return parseConfig(r, config{})
 }
 
-// ParseWithLookup reads an env file from io.Reader, returning a map of keys and values.
-// It uses the lookupEnv to retrieve environment variables. Parse calls this function with
-// LookupEnv as the lookupEnv argument.
-func ParseWithLookup(r io.Reader, lookupEnv LookupEnvFunc) (envMap map[string]string, err error) {
-	return parseConfig(r, config{}, lookupEnv)
+// Unmarshal reads an env file from a byte slice, returning a map of keys and values.
+func Unmarshal(data []byte) (envMap map[string]string, err error) {
+	return parseBytes(data, config{})
 }
 
-func parseConfig(r io.Reader, cfg config, lookupEnv LookupEnvFunc) (envMap map[string]string, err error) {
+// Expand resolves $VAR and ${VAR...} references in s using the process
+// environment. Only $NAME and ${...} are interpreted. To use a custom lookup,
+// or to enable WithBash or WithUnboundError, create a Loader with New.
+func Expand(s string) (string, error) {
+	return expandString(s, config{})
+}
+
+func expandString(s string, cfg config) (string, error) {
+	cfg.restricted = true
+	p := newParser([]byte(s), cfg)
+	return p.expandString(s, cfg.lookupEnv())
+}
+
+func parseConfig(r io.Reader, cfg config) (envMap map[string]string, err error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
 
-	return parseWithLookup(data, cfg, lookupEnv)
+	return parseBytes(data, cfg)
 }
 
-func parseWithLookup(d []byte, cfg config, lookupEnv LookupEnvFunc) (envMap map[string]string, err error) {
+func parseBytes(d []byte, cfg config) (envMap map[string]string, err error) {
 	envMap = make(map[string]string, bytes.Count(d, []byte("\n"))+1)
 
+	lookupEnv := cfg.lookupEnv()
 	expandEnv := func(s []byte) ([]byte, bool) {
 		if val, exists := envMap[string(s)]; exists {
 			return []byte(val), exists
@@ -144,31 +118,6 @@ func parseWithLookup(d []byte, cfg config, lookupEnv LookupEnvFunc) (envMap map[
 	err = parser.parse(envMap, expandEnv)
 
 	return envMap, err
-}
-
-// Parse reads an env file from io.Reader, returning a map of keys and values.
-func Parse(r io.Reader) (envMap map[string]string, err error) {
-	return ParseWithLookup(r, LookupEnv)
-}
-
-// Unmarshal reads an env file from a string, returning a map of keys and values.
-func Unmarshal(str string) (envMap map[string]string, err error) {
-	return Parse(strings.NewReader(str))
-}
-
-// Expand resolves $VAR and ${VAR...} references in s using lookup, for
-// arbitrary strings such as configuration values. Only $NAME and ${...} are
-// interpreted. It accepts the same options as New: without WithUnboundError an
-// unset variable with no modifier expands to the empty string, and WithBash
-// enables the bash quoting forms.
-func Expand(s string, lookup LookupEnvFunc, opts ...Option) (string, error) {
-	cfg := config{restricted: true}
-	for _, opt := range opts {
-		opt(&cfg)
-	}
-
-	p := newParser([]byte(s), cfg)
-	return p.expandString(s, lookup)
 }
 
 // Write serializes the given environment and writes it to a file
@@ -186,7 +135,7 @@ func Write(envMap map[string]string, filename string) (err error) {
 			err = errors.Join(err, cerr)
 		}
 	}()
-	_, err = file.WriteString(content + "\n")
+	_, err = file.Write(append(content, '\n'))
 	if err != nil {
 		return err
 	}
@@ -197,13 +146,13 @@ func Write(envMap map[string]string, filename string) (err error) {
 // Each line is in the format KEY=VALUE. Integer values are written unquoted;
 // every other value is double-quoted and escaped, including $ and `, so the
 // output is safe to source in a shell.
-func Marshal(envMap map[string]string) (string, error) {
+func Marshal(envMap map[string]string) ([]byte, error) {
 	lines := make([]string, 0, len(envMap))
 	for k, v := range envMap {
 		lines = append(lines, k+"="+marshalValue(v))
 	}
 	sort.Strings(lines)
-	return strings.Join(lines, "\n"), nil
+	return []byte(strings.Join(lines, "\n")), nil
 }
 
 // marshalValue renders v for a dotenv file. Integer-looking values stay
@@ -238,12 +187,6 @@ func isInt(s string) bool {
 	return true
 }
 
-// LookupEnv reports the value of the environment variable named by name and whether it exists.
-func LookupEnv(name []byte) (value []byte, exists bool) {
-	val, b := os.LookupEnv(string(name))
-	return []byte(val), b
-}
-
 func filenamesOrDefault(filenames []string) []string {
 	if len(filenames) == 0 {
 		return []string{".env"}
@@ -276,25 +219,6 @@ func loadFile(cfg config, filenames []string, override bool) error {
 	return nil
 }
 
-func readFiles(cfg config, filenames []string) (envMap map[string]string, err error) {
-	filenames = filenamesOrDefault(filenames)
-	envMap = make(map[string]string)
-
-	for _, filename := range filenames {
-		individualEnvMap, individualErr := readFile(cfg, filename)
-		if individualErr != nil {
-			err = individualErr
-			return // return early on a spazout
-		}
-
-		for key, value := range individualEnvMap {
-			envMap[key] = value
-		}
-	}
-
-	return
-}
-
 func readFile(cfg config, filename string) (envMap map[string]string, err error) {
 	file, err := os.Open(filename) // #nosec G304 -- filename is provided by the caller
 	if err != nil {
@@ -306,5 +230,5 @@ func readFile(cfg config, filename string) (envMap map[string]string, err error)
 		}
 	}()
 
-	return parseConfig(file, cfg, LookupEnv)
+	return parseConfig(file, cfg)
 }

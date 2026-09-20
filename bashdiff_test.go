@@ -244,7 +244,7 @@ func script(c bashdiff.Case) string {
 // evaluatePOSIX runs the case through the default (POSIX) parser with no process
 // environment, matching `env -i`.
 func evaluatePOSIX(c bashdiff.Case) (string, error) {
-	env, err := godotenv.ParseWithLookup(strings.NewReader(script(c)), noLookup)
+	env, err := godotenv.New(godotenv.WithLookup(noLookup)).Decode(strings.NewReader(script(c)))
 	if err != nil {
 		return "", err
 	}

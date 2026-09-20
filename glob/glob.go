@@ -39,14 +39,19 @@ func Match(pattern, s []byte) bool {
 	return matchGlob(pattern, s)
 }
 
-// MatchString is Match for string arguments.
-func MatchString(pattern, s string) bool {
-	return Match([]byte(pattern), []byte(s))
+// MatchPrefix returns the longest match of pattern anchored at the start of s,
+// as the half-open byte range [start, end), and whether any prefix matches.
+// start is always 0.
+func MatchPrefix(pattern, s []byte) (start, end int, ok bool) {
+	n, ok := matchPrefixLen(pattern, s)
+	if !ok {
+		return 0, 0, false
+	}
+
+	return 0, n, true
 }
 
-// MatchPrefix returns the length of the longest prefix of s matched by pattern,
-// and whether any prefix matches.
-func MatchPrefix(pattern, s []byte) (int, bool) {
+func matchPrefixLen(pattern, s []byte) (int, bool) {
 	if !globMaybeMatch(pattern, s) {
 		return 0, false
 	}
@@ -100,9 +105,19 @@ func MatchPrefix(pattern, s []byte) (int, bool) {
 	return 0, false
 }
 
-// MatchSuffix returns the length of the longest suffix of s matched by pattern,
-// and whether any suffix matches.
-func MatchSuffix(pattern, s []byte) (int, bool) {
+// MatchSuffix returns the longest match of pattern anchored at the end of s, as
+// the half-open byte range [start, end), and whether any suffix matches. end is
+// always len(s).
+func MatchSuffix(pattern, s []byte) (start, end int, ok bool) {
+	n, ok := matchSuffixLen(pattern, s)
+	if !ok {
+		return 0, 0, false
+	}
+
+	return len(s) - n, len(s), true
+}
+
+func matchSuffixLen(pattern, s []byte) (int, bool) {
 	if !globMaybeMatch(pattern, s) {
 		return 0, false
 	}

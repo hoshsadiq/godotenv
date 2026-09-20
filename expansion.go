@@ -880,13 +880,9 @@ func (p *parser) replace(value, pattern, replacement []byte, all bool, anchor by
 	var ok bool
 	switch anchor {
 	case '#':
-		var n int
-		n, ok = glob.MatchPrefix(pattern, value)
-		start, end = 0, n
+		start, end, ok = glob.MatchPrefix(pattern, value)
 	case '%':
-		var n int
-		n, ok = glob.MatchSuffix(pattern, value)
-		start, end = len(value)-n, len(value)
+		start, end, ok = glob.MatchSuffix(pattern, value)
 	default:
 		start, end, ok = glob.Find(pattern, value)
 	}
@@ -907,7 +903,7 @@ func (p *parser) replace(value, pattern, replacement []byte, all bool, anchor by
 // pattern matching the empty string (such as `*`) inserts a replacement.
 func (p *parser) replaceAll(value, pattern, replacement []byte) []byte {
 	if len(value) == 0 {
-		if n, ok := glob.MatchPrefix(pattern, value); ok && n == 0 {
+		if _, end, ok := glob.MatchPrefix(pattern, value); ok && end == 0 {
 			return append([]byte(nil), replacement...)
 		}
 		return value
@@ -917,8 +913,8 @@ func (p *parser) replaceAll(value, pattern, replacement []byte) []byte {
 	offset := 0
 
 	for offset < len(value) {
-		n, ok := glob.MatchPrefix(pattern, value[offset:])
-		if !ok || n == 0 {
+		_, end, ok := glob.MatchPrefix(pattern, value[offset:])
+		if !ok || end == 0 {
 			_, size := utf8.DecodeRune(value[offset:])
 			out = append(out, value[offset:offset+size]...)
 			offset += size
@@ -926,7 +922,7 @@ func (p *parser) replaceAll(value, pattern, replacement []byte) []byte {
 		}
 
 		out = append(out, replacement...)
-		offset += n
+		offset += end
 	}
 
 	return out

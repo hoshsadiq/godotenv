@@ -1,0 +1,15 @@
+# Allowlist for the default POSIX-mode differential harness.
+#
+# Format: <substring-of-case-id-or-expression><TAB><reason>
+# An entry matches when its key appears in a case ID or in the case
+# expression. Only documented, intentional deviations belong here: if a POSIX
+# suite asserts behaviour this parser deliberately does not follow, allowlist
+# the case and say why. Unsupported constructs are rejected at extraction and
+# never reach this list.
+
+# dotenv values are not word-split, so an unquoted expansion that yields nothing
+# still leaves the literal separator space that surrounded it. The shell drops
+# it. These cases assert the shell's field-splitting result.
+var-op-test.test.sh:103:OUT	unquoted word splitting is not modelled: an empty expansion leaves its literal separator space in dotenv
+var-op-test.test.sh:108:OUT	unquoted word splitting is not modelled: an empty expansion leaves its literal separator space in dotenv
+var-op-test.test.sh:545:OUT	unquoted word splitting is not modelled: an empty expansion leaves its literal separator space in dotenv

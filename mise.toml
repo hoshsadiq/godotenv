@@ -30,6 +30,10 @@ run = "go test -race -cover ./..."
 description = "Run tests with verbose output"
 run = "go test -v -race -cover ./..."
 
+[tasks.bashdiff]
+description = "Diff the parser against GNU bash 5.3 (bash mode) and the Oils/FreeBSD/NetBSD POSIX suites (default mode); downloads them on first run"
+run = "go test -tags bashdiff -run 'TestBashDiff|TestPOSIXDiff' -v ."
+
 [tasks.fmt]
 description = "Format code (gofumpt + goimports)"
 run = ["gofumpt -w .", "goimports -w -local github.com/hoshsadiq/godotenv ."]

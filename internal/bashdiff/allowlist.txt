@@ -1,0 +1,43 @@
+# Allowlist for the bash-mode differential harness.
+#
+# Format: <substring-of-case-id-or-expression><TAB><reason>
+# An entry matches when its key appears in a case ID or in the case
+# expression. Only intentional, by-design deviations belong here.
+#
+# Quoting, backslash and pattern-expansion differences must normally surface as
+# failures for triage. The only exception is the 7 cases below: bash mode
+# deliberately decodes dotenv-style backslash escapes inside double quotes, so
+# those are expected differences from bash, not bugs.
+${x:=	assignment forms ${VAR:=word}/${VAR=word} are unsupported by design
+:=	assignment forms ${VAR:=word}/${VAR=word} are unsupported by design
+${x=	assignment form ${VAR=word} is unsupported by design (also rejected at extraction)
+${!	indirect expansion ${!name} is unsupported by design
+^}	case-modifying expansion ${name^} is unsupported by design
+,}	case-modifying expansion ${name,} is unsupported by design
+~	tilde expansion is not performed by dotenv
+$(	command substitution is never executed
+`	command substitution (backticks) is never executed
+$@	positional/special parameter $@ has no meaning in dotenv
+$*	positional/special parameter $* has no meaning in dotenv
+$#	positional/special parameter $# has no meaning in dotenv
+$?	positional/special parameter $? has no meaning in dotenv
+$!	positional/special parameter $! has no meaning in dotenv
+$$	positional/special parameter $$ (pid) has no meaning in dotenv
+$0	positional parameter $0 has no meaning in dotenv
+$1	positional parameters $1..$9 have no meaning in dotenv
+$2	positional parameters $1..$9 have no meaning in dotenv
+$3	positional parameters $1..$9 have no meaning in dotenv
+$4	positional parameters $1..$9 have no meaning in dotenv
+$5	positional parameters $1..$9 have no meaning in dotenv
+$6	positional parameters $1..$9 have no meaning in dotenv
+$7	positional parameters $1..$9 have no meaning in dotenv
+$8	positional parameters $1..$9 have no meaning in dotenv
+$9	positional parameters $1..$9 have no meaning in dotenv
+IFS	word splitting / IFS has no meaning in dotenv
+nquote.tests:99:OUT	bash mode decodes dotenv-style backslash escapes inside double quotes; bash keeps them literal
+nquote.tests:133:OUT	bash mode decodes dotenv-style backslash escapes inside double quotes; bash keeps them literal
+exp.tests:177:OUT	bash mode decodes dotenv-style backslash escapes inside double quotes; bash keeps them literal
+glob.tests:95:OUT	bash mode decodes dotenv-style backslash escapes inside double quotes; bash keeps them literal
+more-exp.tests:300:OUT	bash mode decodes dotenv-style backslash escapes inside double quotes; bash keeps them literal
+tilde2.tests:41:OUT	bash mode decodes dotenv-style backslash escapes inside double quotes; bash keeps them literal
+tilde2.tests:42:OUT	bash mode decodes dotenv-style backslash escapes inside double quotes; bash keeps them literal

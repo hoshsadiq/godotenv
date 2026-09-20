@@ -20,15 +20,20 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
+        with:
+          go-version-file: go.mod
+          cache: false
       - id: go-version-matrix
         run: |
-          go_version="$(awk '/^go/{print $2}' go.mod)"
+          go_version="$(go list -m -f '{{.GoVersion}}')"
           echo "go_version=${go_version}.x" >> "$GITHUB_OUTPUT"
 
           matrix_versions="$(git ls-remote --tags https://github.com/golang/go |
               awk -F/ '$3 ~ /^go[0-9]+\.[0-9]+(\.[0-9]+)?$/{sub(/^go/, "", $3); sub(/\.[0-9]+$/, "", $3); print $3}' |
               sort -uV |
-              sed -ne "/^$go_version$/,$ p" |
+              awk -v min="$go_version" '$1 == min {found=1} found' |
               jq -cMnR '[inputs | select(length>0)]')"
           echo "matrix=$matrix_versions" >> "$GITHUB_OUTPUT"
     outputs:
@@ -162,7 +167,7 @@ jobs:
           install: true
           cache: true
           experimental: true
-      - name: Allow arm Docker builds
-        run: sudo docker run --privileged linuxkit/binfmt:v0.8
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # v3
       - name: Run GoReleaser
         run: goreleaser release --config .goreleaser.yaml --clean --snapshot --skip=sign

@@ -15,12 +15,13 @@ concurrency:
 
 permissions:
   contents: read
-  security-events: write
-  pull-requests: write
 
 jobs:
   gosec:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c  # v4.3.0
@@ -48,6 +49,9 @@ jobs:
 
   gitleaks:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -57,7 +61,7 @@ jobs:
           version: "2026.9.0"
           install: true
           cache: true
-      - run: gitleaks detect --source . --config .gitleaks.toml --redact --report-format sarif --report-path gitleaks.sarif
+      - run: gitleaks git . --config .gitleaks.toml --redact --report-format sarif --report-path gitleaks.sarif
       - uses: github/codeql-action/upload-sarif@faaca9a8f6edddba5725ffe5adefdab6669a2eca  # v3
         if: always()
         with:

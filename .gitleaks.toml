@@ -10,7 +10,5 @@ paths = [
   '''(^|/)coverage\.(out|html)$''',
   '''(^|/)go\.sum$''',
   '''(^|/)fixtures/''',
-  '''(^|/)README\.md$''',
-  '''(^|/)CHANGELOG\.md$''',
 ]
 stopwords = ["EXAMPLE", "SAMPLE", "PLACEHOLDER"]

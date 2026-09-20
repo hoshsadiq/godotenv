@@ -30,10 +30,11 @@ func WithUnboundError() Option {
 }
 
 // WithBash enables the bash extensions on top of the POSIX defaults: ANSI-C
-// quoting ($'...', including \x{}, \u{} and \U{}), translation quoting ($"..."),
-// the ${var/pat/rep} replacement family (/, //, /# and /%) and dotenv-style
-// backslash escapes inside "..." such as \n and \t. Without this option the
-// parser follows strict POSIX rules, where all of those are literal text.
+// quoting ($'...', including \xHH, \x{}, \uHHHH and \UHHHHHHHH), translation
+// quoting ($"..."), and dotenv-style backslash escapes inside "..." such as \n
+// and \t. Without this option the parser follows strict POSIX rules, where all
+// of those are literal text. The ${var/pat/rep} replacement family and
+// ${var:off:len} substrings are enabled in both modes.
 func WithBash() Option {
 	return func(c *config) {
 		c.bash = true

@@ -255,7 +255,7 @@ func evaluatePOSIX(c bashdiff.Case) (string, error) {
 // environment for fallbacks; TestBashDiff clears it first so undefined
 // references expand to nothing, matching the `env -i` bash side.
 func evaluateBash(c bashdiff.Case) (string, error) {
-	env, err := godotenv.New(godotenv.WithBash()).Unmarshal(script(c))
+	env, err := godotenv.New(godotenv.WithBash()).Unmarshal([]byte(script(c)))
 	if err != nil {
 		return "", err
 	}

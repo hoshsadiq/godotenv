@@ -43,8 +43,8 @@ description = "Run golangci-lint"
 run = "golangci-lint run"
 
 [tasks.vet]
-description = "Run go vet"
-run = "go vet ./..."
+description = "Run go vet in both build modes"
+run = ["go vet ./...", "go vet -tags bashdiff ./..."]
 
 [tasks.check]
 description = "fmt + lint + vet"

@@ -10,7 +10,7 @@ From the original Library:
 
 It can be used as a library (for loading in env for your own daemons etc) or as a bin command.
 
-There is test coverage and CI for both linuxish and windows environments, but I make no guarantees about the bin version working on windows.
+There is test coverage and CI for Linux, macOS and Windows, but I make no guarantees about the command-line tool working on Windows.
 
 This is a fork of [joho/godotenv](https://github.com/joho/godotenv) with an improved parser that allows for far fewer allocations, and, due to removal of regexp usage, it should be significantly faster.
 
@@ -171,8 +171,8 @@ There are four options:
   expanding to an empty string. This is the equivalent of `set -u`.
 - `WithBash()`: opt into the bash extensions. Without it, each of the following
   is literal text:
-  - `$'...'` ANSI-C quoting, including `\xHH`, `\uHHHH`, `\UHHHHHHHH` and the
-    braced `\x{}`, `\u{}`, `\U{}` forms.
+  - `$'...'` ANSI-C quoting, including `\xHH`, the braced `\x{}`, `\uHHHH` and
+    `\UHHHHHHHH`.
   - `$"..."` translation quoting, which behaves as `"..."`.
   - dotenv-style backslash escapes inside `"..."`, so `"\n"` is a newline and
     `"\t"` is a tab.
@@ -219,13 +219,15 @@ Quoting:
 | --- | --- | --- |
 | `"..."` | backslash is special only before `$`, `` ` ``, `"`, `\` and newline, so `"\n"` stays `\n` | dotenv escapes are decoded: `"\n"` is a newline, `"\t"` a tab, plus `\xHH` and `\uHHHH` |
 | `'...'` | literal; nothing is expanded | same |
-| `$'...'` | literal text: the `$` stays and the quotes are dropped, so `$'a\tb'` is `$a\tb` | ANSI-C escapes: `$'a\tb'` is `a`, tab, `b`; also `\xHH`, `\x{}`, `\u{}`, `\U{}` |
+| `$'...'` | literal text: the `$` stays and the quotes are dropped, so `$'a\tb'` is `$a\tb` | ANSI-C escapes: `$'a\tb'` is `a`, tab, `b`; also `\xHH`, `\x{}`, `\uHHHH`, `\UHHHHHHHH` |
 | `$"..."` | a `$` followed by a normal double-quoted string | behaves exactly like `"..."` |
 
 Inside a `${...}` word the quoting is decided by the word itself, not by a
 surrounding `"..."`. So with `WithBash()`, `"${V:-$'a\tb'}"` is `a` + tab + `b`,
-while `"$'a\tb'"` is the literal text `$'a\tb'`, in the second case the `$'`
-sits directly inside the double quotes.
+because the `$'...'` sits inside the `${...}` word. A `$'` written directly in
+`"..."` is not ANSI-C quoting: with `WithBash()`, `"$'a\tb'"` keeps the literal
+`$'` and closing quote but still decodes `\t`, giving `$'a` + tab + `b'`; under
+the default POSIX parser it stays the literal text `$'a\tb'`.
 
 ### Expanding Arbitrary Strings
 
@@ -252,8 +254,9 @@ of the empty string, and `WithBash()` enables the `$'...'` and `$"..."` forms.
 ### Precedence & Conventions
 
 `Load` reads the process's environment, then merges variables read from the
-specified files. It leaves anything already set in the alone, so previously
-environment variables stay. You can use `WithOverride()` to override this.
+specified files. It leaves anything already set in the environment alone, so
+pre-existing environment variables stay. You can use `WithOverride()` to
+override this.
 
 Within one call, files are read in the order you give them. If the same key
 appears in more than one file, the value from the last file is used.
@@ -304,14 +307,26 @@ Because control characters are written with C-style escapes, reading such a file
 
 ```go
 env, err := godotenv.Unmarshal([]byte("KEY=value"))
-err = godotenv.Write(env, "./.env")
+if err != nil {
+    log.Fatal(err)
+}
+if err := godotenv.Write(env, "./.env"); err != nil {
+    log.Fatal(err)
+}
 ```
 
 ... or to bytes
 
 ```go
 env, err := godotenv.Unmarshal([]byte("KEY=value"))
+if err != nil {
+    log.Fatal(err)
+}
 content, err := godotenv.Marshal(env)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(string(content))
 ```
 
 ## Development
@@ -344,9 +359,9 @@ Contributions are most welcome! The parser itself is pretty stupidly naive and I
 
 ## Releases
 
-Releases should follow [Semver](http://semver.org/) though the first couple of releases are `v1` and `v1.1`.
+Releases follow [Semver](https://semver.org/); the first two releases are `v1.0.0` and `v1.1.0`.
 
-Use [annotated tags for all releases](https://github.com/hoshsadiq/godotenv/issues/30). Example `git tag -a v1.2.1`
+Use annotated tags for all releases, for example `git tag -a v1.2.1`
 
 ## Who?
 

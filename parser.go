@@ -161,9 +161,15 @@ func (p *parser) parseValue(c *cursor, lookupEnv LookupEnvFunc) error {
 		return nil
 	}
 
+	// prevEscaped records whether the byte just consumed came from a backslash
+	// escape, so an escaped space does not turn a following '#' into a comment.
+	prevEscaped := false
+
 	for !c.eof() {
 		switch ch := c.peek(); ch {
 		case '\r':
+			prevEscaped = false
+
 			// ignore `\r` in an `\r\n`, but not in only `\r`
 			if c.peekAt(1) == '\n' {
 				c.advance(1)
@@ -188,20 +194,26 @@ func (p *parser) parseValue(c *cursor, lookupEnv LookupEnvFunc) error {
 			p.flushPending()
 			c.advance(1)
 			if c.eof() {
-				return p.newParserError(c.pos, "incomplete escape sequence")
+				p.value = append(p.value, '\\')
+				return nil
 			}
 			if c.peek() == '\r' && c.peekAt(1) == '\n' {
 				c.advance(2)
+				prevEscaped = true
 				continue
 			}
 			if c.peek() == '\n' {
 				c.advance(1)
+				prevEscaped = true
 				continue
 			}
 
 			p.value = append(p.value, c.peek())
 			c.advance(1)
+			prevEscaped = true
 		case '\'':
+			prevEscaped = false
+
 			if err := startValue(c.pos); err != nil {
 				return err
 			}
@@ -211,6 +223,8 @@ func (p *parser) parseValue(c *cursor, lookupEnv LookupEnvFunc) error {
 				return err
 			}
 		case '"':
+			prevEscaped = false
+
 			if err := startValue(c.pos); err != nil {
 				return err
 			}
@@ -220,12 +234,14 @@ func (p *parser) parseValue(c *cursor, lookupEnv LookupEnvFunc) error {
 				return err
 			}
 		case '#':
-			if isSpace(c.data[c.pos-1]) {
+			if !prevEscaped && isSpace(c.data[c.pos-1]) {
 				for !c.eof() && c.peek() != '\n' {
 					c.advance(1)
 				}
 				continue
 			}
+
+			prevEscaped = false
 
 			if err := startValue(c.pos); err != nil {
 				return err
@@ -234,6 +250,8 @@ func (p *parser) parseValue(c *cursor, lookupEnv LookupEnvFunc) error {
 			p.value = append(p.value, ch)
 			c.advance(1)
 		case '$':
+			prevEscaped = false
+
 			if err := startValue(c.pos); err != nil {
 				return err
 			}
@@ -246,9 +264,13 @@ func (p *parser) parseValue(c *cursor, lookupEnv LookupEnvFunc) error {
 
 			p.value = append(p.value, res...)
 		case ' ', '\t':
+			prevEscaped = false
+
 			p.pendingWS = append(p.pendingWS, ch)
 			c.advance(1)
 		default:
+			prevEscaped = false
+
 			if ch < 32 {
 				return p.newInvalidCharacterError(c.pos, ch)
 			}
@@ -282,18 +304,6 @@ func (p *parser) parseSingleQuoted(c *cursor) error {
 		case '\'':
 			c.advance(1)
 			return nil
-		case '\\':
-			p.value = append(p.value, '\\')
-			c.advance(1)
-			if p.cfg.posix {
-				continue
-			}
-			if c.eof() {
-				return p.newParserError(c.pos, "incomplete escape sequence")
-			}
-
-			p.value = append(p.value, c.peek())
-			c.advance(1)
 		default:
 			p.value = append(p.value, ch)
 			c.advance(1)
@@ -319,27 +329,12 @@ func (p *parser) parseDoubleQuoted(c *cursor, lookupEnv LookupEnvFunc) error {
 
 			p.value = append(p.value, res...)
 		case '\\':
-			if !p.cfg.posix {
-				if err := p.parseDoubleQuoteEscape(c); err != nil {
-					return err
-				}
-				continue
+			decoded, err := p.parseDoubleQuoteEscape(c)
+			if err != nil {
+				return err
 			}
 
-			if c.pos+1 >= len(c.data) {
-				return p.newParserError(c.pos, "incomplete escape sequence")
-			}
-
-			c.advance(1)
-			switch next := c.peek(); next {
-			case '$', '`', '"', '\\':
-				p.value = append(p.value, next)
-				c.advance(1)
-			case '\n':
-				c.advance(1)
-			default:
-				p.value = append(p.value, '\\')
-			}
+			p.value = append(p.value, decoded...)
 		default:
 			p.value = append(p.value, ch)
 			c.advance(1)
@@ -349,63 +344,58 @@ func (p *parser) parseDoubleQuoted(c *cursor, lookupEnv LookupEnvFunc) error {
 	return p.newParserError(c.pos, "unmatched double quote")
 }
 
-func (p *parser) parseDoubleQuoteEscape(c *cursor) error {
+// parseDoubleQuoteWordEscape consumes the backslash escape at the cursor inside
+// the word operand of a double-quoted ${...} and returns the bytes it produces.
+// The word follows the POSIX "..." rules in both modes -- only $, `, " and \
+// are escaped and any other backslash stays literal -- even in bash mode, where
+// a plain "..." decodes dotenv-style C escapes. A backslash before the closing
+// } escapes it so it does not end the expansion, and the backslash is dropped.
+func (p *parser) parseDoubleQuoteWordEscape(c *cursor) ([]byte, error) {
 	c.advance(1)
 
 	if c.eof() {
-		return p.newParserError(c.pos, "incomplete escape sequence")
+		return nil, p.newParserError(c.pos, "incomplete escape sequence")
+	}
+
+	switch ch := c.peek(); ch {
+	case '}', '$', '`', '"', '\\':
+		c.advance(1)
+		return []byte{ch}, nil
+	case '\n':
+		c.advance(1)
+		return nil, nil
+	default:
+		return []byte{'\\'}, nil
+	}
+}
+
+// parseDoubleQuoteEscape consumes the backslash escape at the cursor and
+// returns the bytes it produces. In bash mode it applies the dotenv-style C
+// escapes; otherwise it follows the POSIX rules for "..." where only $, `, ",
+// \ and newline are special and any other backslash stays literal.
+func (p *parser) parseDoubleQuoteEscape(c *cursor) ([]byte, error) {
+	c.advance(1)
+
+	if c.eof() {
+		return nil, p.newParserError(c.pos, "incomplete escape sequence")
 	}
 
 	ch := c.peek()
-	if ch == '\r' && c.peekAt(1) == '\n' {
-		c.advance(2)
-		return nil
-	}
-	if ch == '\n' {
-		c.advance(1)
-		return nil
+
+	if p.cfg.bash {
+		return p.decodeBashDoubleQuoteEscape(c)
 	}
 
 	switch ch {
-	case 'b':
-		p.value = append(p.value, '\b')
+	case '$', '`', '"', '\\':
 		c.advance(1)
-	case 'f':
-		p.value = append(p.value, '\f')
+		return []byte{ch}, nil
+	case '\n':
 		c.advance(1)
-	case 'r':
-		p.value = append(p.value, '\r')
-		c.advance(1)
-	case 'n':
-		p.value = append(p.value, '\n')
-		c.advance(1)
-	case 't':
-		p.value = append(p.value, '\t')
-		c.advance(1)
-	case 'u':
-		decoded, width := decodeUnicodeEscape(p.data, c.pos)
-		p.value = append(p.value, decoded...)
-		c.advance(1 + width)
-	case 'x':
-		decoded, width, err := decodeHexEscape(p.data, c.pos, 2, false)
-		if err != nil {
-			return err
-		}
-		p.value = append(p.value, decoded...)
-		c.advance(width)
-	case 'U':
-		decoded, width, err := decodeHexEscape(p.data, c.pos, 8, true)
-		if err != nil {
-			return err
-		}
-		p.value = append(p.value, decoded...)
-		c.advance(width)
+		return nil, nil
 	default:
-		p.value = append(p.value, ch)
-		c.advance(1)
+		return []byte{'\\'}, nil
 	}
-
-	return nil
 }
 
 // longestLine returns the length of the longest line in data, without its

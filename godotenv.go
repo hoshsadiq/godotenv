@@ -26,8 +26,9 @@ type Option func(*config)
 
 type config struct {
 	unboundErr bool
-	posix      bool
+	bash       bool
 	restricted bool
+	override   bool
 }
 
 // WithUnboundError makes an unset variable reference ($VAR or ${VAR}) return an
@@ -38,11 +39,22 @@ func WithUnboundError() Option {
 	}
 }
 
-// WithPOSIX applies POSIX shell quoting rules: inside double quotes only $, `,
-// ", \ and newline are special, and backslash is literal inside single quotes.
-func WithPOSIX() Option {
+// WithBash enables the bash extensions on top of the POSIX defaults: ANSI-C
+// quoting ($'...', including \x{}, \u{} and \U{}), translation quoting ($"..."),
+// the ${var/pat/rep} replacement family (/, //, /# and /%) and dotenv-style
+// backslash escapes inside "..." such as \n and \t. Without this option the
+// parser follows strict POSIX rules, where all of those are literal text.
+func WithBash() Option {
 	return func(c *config) {
-		c.posix = true
+		c.bash = true
+	}
+}
+
+// WithOverride makes Load overwrite variables already set in the process
+// environment, so the files win instead of the environment.
+func WithOverride() Option {
+	return func(c *config) {
+		c.override = true
 	}
 }
 
@@ -60,16 +72,11 @@ func New(opts ...Option) *Loader {
 	return l
 }
 
-// Load reads the given files and sets unset variables in the process
-// environment.
+// Load reads the given files and sets variables in the process environment.
+// Variables already set are left alone unless the loader was created with
+// WithOverride.
 func (l *Loader) Load(filenames ...string) error {
-	return loadFile(l.cfg, filenames, false)
-}
-
-// Overload reads the given files and overrides variables already set in the
-// process environment.
-func (l *Loader) Overload(filenames ...string) error {
-	return loadFile(l.cfg, filenames, true)
+	return loadFile(l.cfg, filenames, l.cfg.override)
 }
 
 // Read returns the variables from the given files as a map.
@@ -97,18 +104,6 @@ func (l *Loader) Unmarshal(str string) (map[string]string, error) {
 // It's important to note that it WILL NOT OVERRIDE an env variable that already exists - consider the .env file to set dev vars or sensible defaults
 func Load(filenames ...string) (err error) {
 	return loadFile(config{}, filenames, false)
-}
-
-// Overload will read your env file(s) and load them into ENV for this process.
-// Call this function as close as possible to the start of your program (ideally in main)
-// If you call Overload without any args it will default to loading .env in the current path
-// You can otherwise tell it which files to load (there can be more than one) like
-//
-//	godotenv.Overload("fileone", "filetwo")
-//
-// It's important to note this WILL OVERRIDE an env variable that already exists - consider the .env file to forcefilly set all vars.
-func Overload(filenames ...string) (err error) {
-	return loadFile(config{}, filenames, true)
 }
 
 // Read all env (with same file loading semantics as Load) but return values as
@@ -163,9 +158,16 @@ func Unmarshal(str string) (envMap map[string]string, err error) {
 
 // Expand resolves $VAR and ${VAR...} references in s using lookup, for
 // arbitrary strings such as configuration values. Only $NAME and ${...} are
-// interpreted. An unset variable with no modifier is an error.
-func Expand(s string, lookup LookupEnvFunc) (string, error) {
-	p := newParser([]byte(s), config{unboundErr: true, restricted: true})
+// interpreted. It accepts the same options as New: without WithUnboundError an
+// unset variable with no modifier expands to the empty string, and WithBash
+// enables the bash quoting forms.
+func Expand(s string, lookup LookupEnvFunc, opts ...Option) (string, error) {
+	cfg := config{restricted: true}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+
+	p := newParser([]byte(s), cfg)
 	return p.expandString(s, lookup)
 }
 
@@ -193,18 +195,32 @@ func Write(envMap map[string]string, filename string) (err error) {
 
 // Marshal outputs the given environment as a dotenv-formatted environment file.
 // Each line is in the format KEY=VALUE. Integer values are written unquoted;
-// every other value is quoted and escaped.
+// every other value is double-quoted and escaped, including $ and `, so the
+// output is safe to source in a shell.
 func Marshal(envMap map[string]string) (string, error) {
 	lines := make([]string, 0, len(envMap))
 	for k, v := range envMap {
-		if isInt(v) {
-			lines = append(lines, k+"="+v)
-		} else {
-			lines = append(lines, k+"="+strconv.Quote(v))
-		}
+		lines = append(lines, k+"="+marshalValue(v))
 	}
 	sort.Strings(lines)
 	return strings.Join(lines, "\n"), nil
+}
+
+// marshalValue renders v for a dotenv file. Integer-looking values stay
+// unquoted; everything else is double-quoted with Go-style escapes and then
+// has $ and ` backslash-escaped so a shell sourcing the file will not perform
+// parameter expansion or command substitution.
+func marshalValue(v string) string {
+	if isInt(v) {
+		return v
+	}
+
+	// strconv.Quote escapes backslashes, so a literal $ or ` in v survives as
+	// a single byte here; adding a backslash in front cannot double-escape.
+	quoted := strconv.Quote(v)
+	quoted = strings.ReplaceAll(quoted, "$", `\$`)
+	quoted = strings.ReplaceAll(quoted, "`", "\\`")
+	return quoted
 }
 
 func isInt(s string) bool {
@@ -235,7 +251,7 @@ func filenamesOrDefault(filenames []string) []string {
 	return filenames
 }
 
-func loadFile(cfg config, filenames []string, overload bool) error {
+func loadFile(cfg config, filenames []string, override bool) error {
 	filenames = filenamesOrDefault(filenames)
 
 	currentEnv := map[string]bool{}
@@ -251,7 +267,7 @@ func loadFile(cfg config, filenames []string, overload bool) error {
 		}
 
 		for key, value := range envMap {
-			if !currentEnv[key] || overload {
+			if !currentEnv[key] || override {
 				_ = os.Setenv(key, value)
 			}
 		}

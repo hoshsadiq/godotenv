@@ -145,44 +145,72 @@ myEnv, err := godotenv.Unmarshal(content)
 ### Options
 
 `godotenv.New` returns a `*Loader` that you configure once and reuse across
-`Load`, `Overload`, `Read`, `Parse` and `Unmarshal`:
+`Load`, `Read`, `Parse` and `Unmarshal`:
 
 ```go
-loader := godotenv.New(godotenv.WithPOSIX())
+loader := godotenv.New(godotenv.WithBash())
 
 env, err := loader.Read(".env")
 ```
 
-There are two options:
+By default the parser follows strict POSIX shell rules with some exceptions.
+There are three options:
 
 - `WithUnboundError()`: an unset `$VAR` or `${VAR}` returns an error instead of
   expanding to an empty string. This is the equivalent of `set -u`.
-- `WithPOSIX()`: apply POSIX shell quoting rules. Inside double quotes only `$`,
-  `` ` ``, `"`, `\` and newline are special, so `"\n"` keeps its backslash, and
-  inside single quotes the backslash is literal. This option does not affect
-  `$'...'`, which always expands.
+- `WithBash()`: opt into the bash extensions. Without it, each of the following
+  is literal text:
+  - `$'...'` ANSI-C quoting, including `\xHH`, `\uHHHH`, `\UHHHHHHHH` and the
+    braced `\x{}`, `\u{}`, `\U{}` forms.
+  - `$"..."` translation quoting, which behaves as `"..."`.
+  - dotenv-style backslash escapes inside `"..."`, so `"\n"` is a newline and
+    `"\t"` is a tab.
+- `WithOverride()`: `Load` overwrites variables already set in the process
+  environment, so the files win instead of the environment.
 
-The package-level `Load`, `Overload`, `Read`, `Parse`, `Unmarshal` and
-`ParseWithLookup` functions use the default behaviour.
+The package-level `Load`, `Read`, `Parse`, `Unmarshal` and
+`ParseWithLookup` functions use the default (POSIX) behaviour.
 
-### Parameter Expansion
+### Shell Semantics
 
-`${...}` supports the POSIX shell forms. `${VAR}` reads the variable, while
-`${VAR:-word}`, `${VAR-word}`, `${VAR:+word}` and `${VAR+word}` choose between
-the value and a word, and that word is expanded recursively. `${#VAR}` gives
-the length, and `${VAR:?word}` or `${VAR?word}` raise an error when the variable
-is unset. The assignment forms `${VAR:=word}` and `${VAR=word}` are not
-supported.
+These forms are recognised in a value. `pat` is a shell glob (`*`, `?`,
+`[...]`); `word` and `rep` are expanded recursively.
 
-The pattern operators trim and replace text: `${VAR#pat}`, `${VAR##pat}`,
-`${VAR%pat}` and `${VAR%%pat}` remove prefixes and suffixes, `${VAR/pat/rep}`
-and `${VAR//pat/rep}` replace the first or every match, `${VAR/#pat/rep}` and
-`${VAR/%pat/rep}` anchor the match to the start or end, and `${VAR:offset}` or
-`${VAR:offset:length}` take a substring. Offsets may be negative, and patterns
-use shell globbing (`*`, `?`, `[...]`).
+| form | meaning |
+| --- | --- |
+| `$VAR`, `${VAR}` | the value of `VAR`; empty when unset, or an error with `WithUnboundError()` |
+| `${VAR:-word}`, `${VAR-word}` | `word` when `VAR` is unset; with `:` also when it is empty |
+| `${VAR:+word}`, `${VAR+word}` | `word` when `VAR` is set; with `:` also when it is non-empty |
+| `${VAR:?word}`, `${VAR?word}` | an error when `VAR` is unset; with `:` also when it is empty |
+| `${VAR:=word}`, `${VAR=word}` | not supported — a parse error, since assigning inside a value makes no sense in an `.env` file |
+| `${#VAR}` | the length of `VAR`, in characters |
+| `${VAR#pat}`, `${VAR##pat}` | strip the shortest / longest matching prefix |
+| `${VAR%pat}`, `${VAR%%pat}` | strip the shortest / longest matching suffix |
+| `${VAR:offset}`, `${VAR:offset:length}` | substring; both are arithmetic and may be negative |
+| `${VAR/pat/rep}`, `${VAR//pat/rep}` | replace the first / every match (ksh/bash extension, enabled in both modes) |
+| `${VAR/#pat/rep}`, `${VAR/%pat/rep}` | replace a match anchored to the start / end (same extension) |
+| `$((...))` | integer arithmetic, evaluated |
+| `$(...)`, `` `...` `` * | kept verbatim and is not executed |
 
-`$'...'` is ANSI-C quoted and expands C-style escapes such as `\n`, `\t`,
-`\xHH`, `\uHHHH` and `\UHHHHHHHH`.
+\* As mentioned in the table, command substitution is never executed: `$(...)`
+and backticks are copied through as text, so loading a `.env` file cannot
+run a command. I can't foresee it being needed in `.env` files, and feels
+like it's rife for exploitation. I'm happy for someone to make the case
+for adding support for this, please raise an issue.
+
+Quoting:
+
+| form | default (POSIX) | `WithBash()` |
+| --- | --- | --- |
+| `"..."` | backslash is special only before `$`, `` ` ``, `"`, `\` and newline, so `"\n"` stays `\n` | dotenv escapes are decoded: `"\n"` is a newline, `"\t"` a tab, plus `\xHH` and `\uHHHH` |
+| `'...'` | literal; nothing is expanded | same |
+| `$'...'` | literal text: the `$` stays and the quotes are dropped, so `$'a\tb'` is `$a\tb` | ANSI-C escapes: `$'a\tb'` is `a`, tab, `b`; also `\xHH`, `\x{}`, `\u{}`, `\U{}` |
+| `$"..."` | a `$` followed by a normal double-quoted string | behaves exactly like `"..."` |
+
+Inside a `${...}` word the quoting is decided by the word itself, not by a
+surrounding `"..."`. So with `WithBash()`, `"${V:-$'a\tb'}"` is `a` + tab + `b`,
+while `"$'a\tb'"` is the literal text `$'a\tb'`, in the second case the `$'`
+sits directly inside the double quotes.
 
 ### Expanding Arbitrary Strings
 
@@ -193,13 +221,25 @@ that are not `.env` syntax:
 out, err := godotenv.Expand("token=${API_KEY}", godotenv.LookupEnv)
 ```
 
-Only `$NAME` and `${...}` are interpreted. An unset variable with no modifier
-is an error. `LookupEnvFunc` is the lookup signature shared by `Expand` and
-`ParseWithLookup`.
+Only `$NAME` and `${...}` are interpreted. It takes the same options as `New`:
+`WithUnboundError()` makes an unset variable with no modifier an error instead
+of the empty string, and `WithBash()` enables the `$'...'` and `$"..."` forms.
+`$((...))` is left as written. `LookupEnvFunc` is the lookup signature shared by
+`Expand` and `ParseWithLookup`.
 
 ### Precedence & Conventions
 
-Existing envs take precedence of envs that are loaded later.
+`Load` reads the process's environment, then merges variables read from the
+specified files. It leaves anything already set in the alone, so previously
+environment variables stay. You can use `WithOverride()` to override this.
+
+Within one call, files are read in the order you give them. If the same key
+appears in more than one file, the value from the last file is used. `Read`
+returns that same merged result as a map instead of writing to the process
+environment.
+
+Key names must match `[A-Za-z_][A-Za-z0-9_]*`; in particular they cannot
+contain `-` or `.`.
 
 The [convention](https://github.com/bkeepers/dotenv#what-other-env-files-can-i-use)
 for managing multiple environments (i.e. development, test, production)
@@ -219,8 +259,9 @@ godotenv.Load(".env." + env)
 godotenv.Load() // The Original .env
 ```
 
-If you need to, you can also use `godotenv.Overload()` to defy this convention
-and overwrite existing envs instead of only supplanting them. Use with caution.
+If you need to, you can also use `godotenv.New(godotenv.WithOverride()).Load(...)`
+to defy this convention and overwrite existing envs instead of only supplanting
+them. Use with caution.
 
 ### Command Mode
 
@@ -232,13 +273,18 @@ godotenv -f /some/path/to/.env some_command with some args
 
 If you don't specify `-f` it will fall back on the default of loading `.env` in `PWD`
 
+`-f` may be repeated to load several files (later files win) and replaces the
+default `.env`. Pass `-o` to override existing environment variables.
+
 ### Writing Env Files
 
-Godotenv can also write a map back to a correctly formatted and escaped file. Values are preserved as they are: integer values stay unquoted, leading zeros included, and everything else is quoted.
+Godotenv can also write a map back to a correctly formatted and escaped file. Values are preserved as they are: integer values stay unquoted, leading zeros included, and everything else is double-quoted with `$` and `` ` `` backslash-escaped so the file is safe to `source`.
+
+Because control characters are written with C-style escapes, reading such a file back needs `WithBash()`; the default POSIX parser keeps those backslashes literal.
 
 ```go
 env, err := godotenv.Unmarshal("KEY=value")
-err := godotenv.Write(env, "./.env")
+err = godotenv.Write(env, "./.env")
 ```
 
 ... or to a string

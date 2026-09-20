@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -43,7 +45,7 @@ func TestFileLoading(t *testing.T) {
 				"OPTION_DOUBLE_A": "1",
 				"OPTION_DOUBLE_B": "2",
 				"OPTION_DOUBLE_C": "",
-				"OPTION_DOUBLE_D": "\n",
+				"OPTION_DOUBLE_D": "\\n",
 				"OPTION_DOUBLE_E": "echo 'asd'",
 				"OPTION_DOUBLE_F": "echo asd",
 				"OPTION_DOUBLE_G": "\"escaped\"",
@@ -162,11 +164,11 @@ func TestLoadWithNoArgsLoadsDotEnv(t *testing.T) {
 	}
 }
 
-func TestOverloadWithNoArgsOverloadsDotEnv(t *testing.T) {
+func TestWithOverrideWithNoArgsOverridesDotEnv(t *testing.T) {
 	t.Parallel()
 
 	var pathError *os.PathError
-	if err := godotenv.Overload(); !errors.As(err, &pathError) || pathError.Op != "open" || pathError.Path != ".env" {
+	if err := godotenv.New(godotenv.WithOverride()).Load(); !errors.As(err, &pathError) || pathError.Op != "open" || pathError.Path != ".env" {
 		t.Errorf("Didn't try and open .env by default")
 	}
 }
@@ -180,12 +182,12 @@ func TestLoadFileNotFound(t *testing.T) {
 	}
 }
 
-func TestOverloadFileNotFound(t *testing.T) {
+func TestWithOverrideFileNotFound(t *testing.T) {
 	t.Parallel()
 
-	err := godotenv.Overload("somefilethatwillneverexistever.env")
+	err := godotenv.New(godotenv.WithOverride()).Load("somefilethatwillneverexistever.env")
 	if err == nil {
-		t.Error("File wasn't found but Overload didn't return an error")
+		t.Error("File wasn't found but Load with WithOverride didn't return an error")
 	}
 }
 
@@ -236,7 +238,7 @@ func TestParse(t *testing.T) {
 func TestLoadDoesNotOverride(t *testing.T) {
 	envFileName := "fixtures/plain.env"
 
-	// ensure NO overload
+	// ensure NO override
 	vars := map[string]string{
 		"OPTION_A": "do_not_override",
 		"OPTION_B": "",
@@ -263,10 +265,10 @@ func TestLoadDoesNotOverride(t *testing.T) {
 	}
 }
 
-func TestOverloadDoesOverride(t *testing.T) {
+func TestWithOverrideDoesOverride(t *testing.T) {
 	envFileName := "fixtures/plain.env"
 
-	// ensure NO overload
+	// ensure NO override
 	vars := map[string]string{
 		"OPTION_A": "do_not_override",
 	}
@@ -282,7 +284,7 @@ func TestOverloadDoesOverride(t *testing.T) {
 		_ = os.Setenv(k, v)
 	}
 
-	err := godotenv.Overload(envFileName)
+	err := godotenv.New(godotenv.WithOverride()).Load(envFileName)
 	if err != nil {
 		t.Fatalf("Error loading %v: %s", envFileName, err)
 	}
@@ -293,6 +295,80 @@ func TestOverloadDoesOverride(t *testing.T) {
 		if envValue != v {
 			t.Errorf("Mismatch for key '%v': expected '%v' got '%v'", k, v, envValue)
 		}
+	}
+}
+
+func TestReadMultipleFilesLastWins(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.env")
+	second := filepath.Join(dir, "second.env")
+	writeTestFile(t, first, "SHARED=first\nONLY_FIRST=1\n")
+	writeTestFile(t, second, "SHARED=second\nONLY_SECOND=2\n")
+
+	got, err := godotenv.Read(first, second)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := map[string]string{
+		"SHARED":      "second",
+		"ONLY_FIRST":  "1",
+		"ONLY_SECOND": "2",
+	}
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("expected %v, got %v", want, got)
+	}
+}
+
+func TestLoadMultipleFilesLastWins(t *testing.T) {
+	// Load mutates the process environment, so this test does not run in
+	// parallel. Unique key names keep it clear of the other env tests.
+	const (
+		shared     = "GODOTENV_TEST_MULTIFILE_SHARED"
+		onlyFirst  = "GODOTENV_TEST_MULTIFILE_FIRST"
+		onlySecond = "GODOTENV_TEST_MULTIFILE_SECOND"
+	)
+
+	for _, key := range []string{shared, onlyFirst, onlySecond} {
+		old, had := os.LookupEnv(key)
+		_ = os.Unsetenv(key)
+		t.Cleanup(func() {
+			if had {
+				_ = os.Setenv(key, old)
+			} else {
+				_ = os.Unsetenv(key)
+			}
+		})
+	}
+
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first.env")
+	second := filepath.Join(dir, "second.env")
+	writeTestFile(t, first, shared+"=first\n"+onlyFirst+"=1\n")
+	writeTestFile(t, second, shared+"=second\n"+onlySecond+"=2\n")
+
+	if err := godotenv.Load(first, second); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := os.Getenv(shared); got != "second" {
+		t.Errorf("expected the later file to win, got %q", got)
+	}
+	if got := os.Getenv(onlyFirst); got != "1" {
+		t.Errorf("expected %s=1, got %q", onlyFirst, got)
+	}
+	if got := os.Getenv(onlySecond); got != "2" {
+		t.Errorf("expected %s=2, got %q", onlySecond, got)
+	}
+}
+
+func writeTestFile(t *testing.T, name, content string) {
+	t.Helper()
+
+	if err := os.WriteFile(name, []byte(content), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", name, err)
 	}
 }
 
@@ -410,7 +486,7 @@ func TestParsing(t *testing.T) {
 		{rawEnvLine: "export\tOPTION_A=2", expectedKey: "OPTION_A", expectedValue: "2"},
 		{rawEnvLine: "  export OPTION_A=2", expectedKey: "OPTION_A", expectedValue: "2"},
 		{rawEnvLine: "\texport OPTION_A=2", expectedKey: "OPTION_A", expectedValue: "2"},
-		{rawEnvLine: `FOO="bar\nbaz"`, expectedKey: "FOO", expectedValue: "bar\nbaz"},
+		{rawEnvLine: `FOO="bar\nbaz"`, expectedKey: "FOO", expectedValue: "bar\\nbaz"},
 		{rawEnvLine: "FOO.BAR=foobar", expectedKey: "", expectedValue: ""},
 
 		// it 'parses varibales with several "=" in the value' do
@@ -438,9 +514,9 @@ func TestParsing(t *testing.T) {
 		{rawEnvLine: "FOO='ba#r'", expectedKey: "FOO", expectedValue: "ba#r"},
 
 		// newlines and backslashes should be escaped
-		{rawEnvLine: `FOO="bar\n\ b\az"`, expectedKey: "FOO", expectedValue: "bar\n baz"},
-		{rawEnvLine: `FOO="bar\\\n\ b\az"`, expectedKey: "FOO", expectedValue: "bar\\\n baz"},
-		{rawEnvLine: `FOO="bar\\r\ b\az"`, expectedKey: "FOO", expectedValue: "bar\\r baz"},
+		{rawEnvLine: `FOO="bar\n\ b\az"`, expectedKey: "FOO", expectedValue: "bar\\n\\ b\\az"},
+		{rawEnvLine: `FOO="bar\\\n\ b\az"`, expectedKey: "FOO", expectedValue: "bar\\\\n\\ b\\az"},
+		{rawEnvLine: `FOO="bar\\r\ b\az"`, expectedKey: "FOO", expectedValue: "bar\\r\\ b\\az"},
 
 		{rawEnvLine: `="value"`, expectedKey: "", expectedValue: ""},
 		{rawEnvLine: `KEY="`, expectedKey: "", expectedValue: ""},
@@ -476,6 +552,14 @@ func TestParsing(t *testing.T) {
 		// Hashes are comments if it's directly followed by whitespace
 		{rawEnvLine: `FOO=asd#asd`, expectedKey: "FOO", expectedValue: "asd#asd"},
 		{rawEnvLine: `FOO=asd #asd`, expectedKey: "FOO", expectedValue: "asd"},
+
+		// an escaped space does not turn a following # into a comment
+		{rawEnvLine: `FOO=a\ #b`, expectedKey: "FOO", expectedValue: "a #b"},
+		{rawEnvLine: `FOO=a\#b`, expectedKey: "FOO", expectedValue: "a#b"},
+		{rawEnvLine: `FOO=a\  #b`, expectedKey: "FOO", expectedValue: "a "},
+
+		// a trailing backslash at EOF is literal
+		{rawEnvLine: `FOO=abc\`, expectedKey: "FOO", expectedValue: `abc\`},
 
 		// unquoted whitespace is preserved, not concatenated
 		{rawEnvLine: "FOO=a b c", expectedKey: "FOO", expectedValue: "a b c"},
@@ -613,6 +697,40 @@ func TestValueWhitespace(t *testing.T) {
 	}
 }
 
+func TestTrailingBackslashAtEOF(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"unquoted is literal", `FOO=abc\`, `abc\`, false},
+		{"double quoted is unterminated", `FOO="abc\`, "", true},
+		{"single quoted is unterminated", `FOO='abc\`, "", true},
+		{"ansi-c quoted is unterminated", `FOO=$'abc\`, "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.Unmarshal(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
 func TestCommentFirstLineAndEOF(t *testing.T) {
 	t.Parallel()
 
@@ -694,6 +812,18 @@ func TestUnboundVariableOption(t *testing.T) {
 		{"unset unbraced errors with option", "FOO=$" + unset, []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
 		{"unset braced errors with option", "FOO=${" + unset + "}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
 		{"length of unset errors with option", "FOO=${#" + unset + "}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset strip errors with option", "FOO=${" + unset + "#a}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset longest strip errors with option", "FOO=${" + unset + "##a}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset suffix errors with option", "FOO=${" + unset + "%a}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset longest suffix errors with option", "FOO=${" + unset + "%%a}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset replace errors with option", "FOO=${" + unset + "/a/b}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset replace all errors with option", "FOO=${" + unset + "//a/b}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset anchored replace errors with option", "FOO=${" + unset + "/#a/b}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset anchored suffix replace errors with option", "FOO=${" + unset + "/%a/b}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset substring errors with option", "FOO=${" + unset + ":1}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset substring length errors with option", "FOO=${" + unset + ":1:2}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset inside strip pattern errors with option", "A=abc\nFOO=${A#${" + unset + "}}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
+		{"unset inside replace pattern errors with option", "A=abc\nFOO=${A/${" + unset + "}/x}", []godotenv.Option{godotenv.WithUnboundError()}, nil, true},
 		{"default word is not an unbound error", "FOO=${" + unset + ":-fallback}", []godotenv.Option{godotenv.WithUnboundError()}, map[string]string{"FOO": "fallback"}, false},
 		{"set variable is fine", "BAR=1\nFOO=$BAR", []godotenv.Option{godotenv.WithUnboundError()}, map[string]string{"BAR": "1", "FOO": "1"}, false},
 	}
@@ -734,6 +864,60 @@ func TestNewDefaultsMatchPackageFuncs(t *testing.T) {
 	}
 }
 
+func TestLoaderOptions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("unbound error through Read", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := godotenv.New(godotenv.WithUnboundError()).Read("fixtures/substitutions.env")
+		if err == nil {
+			t.Fatal("expected an error for the unset variable")
+		}
+		if msg := err.Error(); !strings.Contains(msg, "unbound variable") {
+			t.Errorf("expected an unbound variable error, got: %v", err)
+		}
+	})
+
+	t.Run("unbound error through Load", func(t *testing.T) {
+		t.Parallel()
+
+		if err := godotenv.New(godotenv.WithUnboundError()).Load("fixtures/substitutions.env"); err == nil {
+			t.Fatal("expected an error for the unset variable")
+		}
+	})
+
+	t.Run("unbound error through WithOverride", func(t *testing.T) {
+		t.Parallel()
+
+		if err := godotenv.New(godotenv.WithUnboundError(), godotenv.WithOverride()).Load("fixtures/substitutions.env"); err == nil {
+			t.Fatal("expected an error for the unset variable")
+		}
+	})
+
+	t.Run("single quote backslash is literal in both modes", func(t *testing.T) {
+		t.Parallel()
+
+		for _, opts := range [][]godotenv.Option{nil, {godotenv.WithBash()}} {
+			got, err := godotenv.New(opts...).Unmarshal(`FOO='\'`)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != `\` {
+				t.Fatalf("expected %q, got %q", `\`, got["FOO"])
+			}
+		}
+	})
+
+	t.Run("default reads quoted env", func(t *testing.T) {
+		t.Parallel()
+
+		if _, err := godotenv.New().Read("fixtures/quoted.env"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
 func TestParameterExpansion(t *testing.T) {
 	const unset = "GODOTENV_PE_UNSET"
 	_ = os.Unsetenv(unset)
@@ -743,39 +927,44 @@ func TestParameterExpansion(t *testing.T) {
 		input   string
 		want    map[string]string
 		wantErr bool
+		bash    bool
 	}{
-		{"length", "GODOTENV_PE_A=hello\nFOO=${#GODOTENV_PE_A}", map[string]string{"GODOTENV_PE_A": "hello", "FOO": "5"}, false},
-		{"length of empty", "GODOTENV_PE_A=\nFOO=${#GODOTENV_PE_A}", map[string]string{"GODOTENV_PE_A": "", "FOO": "0"}, false},
-		{"default recursive", "GODOTENV_PE_B=bla\nFOO=${" + unset + ":-$GODOTENV_PE_B}", map[string]string{"GODOTENV_PE_B": "bla", "FOO": "bla"}, false},
-		{"default nested", "GODOTENV_PE_B=bla\nFOO=${" + unset + ":-${GODOTENV_PE_B}}", map[string]string{"GODOTENV_PE_B": "bla", "FOO": "bla"}, false},
-		{"alt recursive", "GODOTENV_PE_A=1\nFOO=${GODOTENV_PE_A:+${GODOTENV_PE_A}x}", map[string]string{"GODOTENV_PE_A": "1", "FOO": "1x"}, false},
-		{"default with spaces", "FOO=${" + unset + ":-a b}", map[string]string{"FOO": "a b"}, false},
-		{"error op with value", "GODOTENV_PE_A=x\nFOO=${GODOTENV_PE_A:?boom}", map[string]string{"GODOTENV_PE_A": "x", "FOO": "x"}, false},
-		{"error op unset", "FOO=${" + unset + ":?boom}", nil, true},
-		{"error op empty", "GODOTENV_PE_A=\nFOO=${GODOTENV_PE_A:?boom}", nil, true},
-		{"qmark op unset", "FOO=${" + unset + "?boom}", nil, true},
-		{"qmark op empty is set", "GODOTENV_PE_A=\nFOO=${GODOTENV_PE_A?boom}", map[string]string{"GODOTENV_PE_A": "", "FOO": ""}, false},
-		{"empty braces", "FOO=${}", nil, true},
-		{"assign op unsupported colon", "FOO=${" + unset + ":=x}", nil, true},
-		{"assign op unsupported", "FOO=${" + unset + "=x}", nil, true},
-		{"substring trailing junk", "A=hello\nFOO=${A:1:2:3}", nil, true},
-		{"word quote closes before brace", "A=xyz\nB=${A-'a\\'b}", map[string]string{"A": "xyz", "B": "xyz"}, false},
-		{"word unterminated quote errors", "A=xyz\nB=${A-'a\\'b'}", nil, true},
-		{"word slash inside quote errors", "A=xyz\nB=${A/'/x}", nil, true},
-		{"strip pattern unterminated quote errors", "A=xyz\nB=${A#'a\\'b'}", nil, true},
-		{"default word unterminated quote errors", "A=xyz\nB=${A:-'a\\'b'}", nil, true},
-		{"replace pattern with brace", "A=xyz\nB=${A/a{b/c}", map[string]string{"A": "xyz", "B": "xyz"}, false},
-		{"unset word backslash in quotes", "B=${" + unset + "-'a\\'b}", map[string]string{"B": "a\\b"}, false},
-		{"unset word unterminated quote errors", "B=${" + unset + "-'a\\'b'}", nil, true},
-		{"word brace is literal", "B=${" + unset + ":-a{b}", map[string]string{"B": "a{b"}, false},
-		{"word brace does not nest", "B=${" + unset + ":-a{b}c}", map[string]string{"B": "a{bc}"}, false},
-		{"word brace with value", "GODOTENV_PE_A=xyz\nFOO=${GODOTENV_PE_A:-a{b}c}", map[string]string{"GODOTENV_PE_A": "xyz", "FOO": "xyzc}"}, false},
-		{"word empty braces stay literal", "B=${" + unset + ":-{}}", map[string]string{"B": "{}"}, false},
+		{"length", "GODOTENV_PE_A=hello\nFOO=${#GODOTENV_PE_A}", map[string]string{"GODOTENV_PE_A": "hello", "FOO": "5"}, false, false},
+		{"length of empty", "GODOTENV_PE_A=\nFOO=${#GODOTENV_PE_A}", map[string]string{"GODOTENV_PE_A": "", "FOO": "0"}, false, false},
+		{"default recursive", "GODOTENV_PE_B=bla\nFOO=${" + unset + ":-$GODOTENV_PE_B}", map[string]string{"GODOTENV_PE_B": "bla", "FOO": "bla"}, false, false},
+		{"default nested", "GODOTENV_PE_B=bla\nFOO=${" + unset + ":-${GODOTENV_PE_B}}", map[string]string{"GODOTENV_PE_B": "bla", "FOO": "bla"}, false, false},
+		{"alt recursive", "GODOTENV_PE_A=1\nFOO=${GODOTENV_PE_A:+${GODOTENV_PE_A}x}", map[string]string{"GODOTENV_PE_A": "1", "FOO": "1x"}, false, false},
+		{"default with spaces", "FOO=${" + unset + ":-a b}", map[string]string{"FOO": "a b"}, false, false},
+		{"error op with value", "GODOTENV_PE_A=x\nFOO=${GODOTENV_PE_A:?boom}", map[string]string{"GODOTENV_PE_A": "x", "FOO": "x"}, false, false},
+		{"error op unset", "FOO=${" + unset + ":?boom}", nil, true, false},
+		{"error op empty", "GODOTENV_PE_A=\nFOO=${GODOTENV_PE_A:?boom}", nil, true, false},
+		{"qmark op unset", "FOO=${" + unset + "?boom}", nil, true, false},
+		{"qmark op empty is set", "GODOTENV_PE_A=\nFOO=${GODOTENV_PE_A?boom}", map[string]string{"GODOTENV_PE_A": "", "FOO": ""}, false, false},
+		{"empty braces", "FOO=${}", nil, true, false},
+		{"assign op unsupported colon", "FOO=${" + unset + ":=x}", nil, true, false},
+		{"assign op unsupported", "FOO=${" + unset + "=x}", nil, true, false},
+		{"substring trailing junk", "A=hello\nFOO=${A:1:2:3}", nil, true, false},
+		{"word quote closes before brace", "A=xyz\nB=${A-'a\\'b}", map[string]string{"A": "xyz", "B": "xyz"}, false, false},
+		{"word unterminated quote errors", "A=xyz\nB=${A-'a\\'b'}", nil, true, false},
+		{"word slash inside quote errors", "A=xyz\nB=${A/'/x}", nil, true, false},
+		{"strip pattern unterminated quote errors", "A=xyz\nB=${A#'a\\'b'}", nil, true, false},
+		{"default word unterminated quote errors", "A=xyz\nB=${A:-'a\\'b'}", nil, true, false},
+		{"replace pattern with brace", "A=xyz\nB=${A/a{b/c}", map[string]string{"A": "xyz", "B": "xyz"}, false, true},
+		{"unset word backslash in quotes", "B=${" + unset + "-'a\\'b}", map[string]string{"B": "a\\b"}, false, false},
+		{"unset word unterminated quote errors", "B=${" + unset + "-'a\\'b'}", nil, true, false},
+		{"word brace is literal", "B=${" + unset + ":-a{b}", map[string]string{"B": "a{b"}, false, false},
+		{"word brace does not nest", "B=${" + unset + ":-a{b}c}", map[string]string{"B": "a{bc}"}, false, false},
+		{"word brace with value", "GODOTENV_PE_A=xyz\nFOO=${GODOTENV_PE_A:-a{b}c}", map[string]string{"GODOTENV_PE_A": "xyz", "FOO": "xyzc}"}, false, false},
+		{"word empty braces stay literal", "B=${" + unset + ":-{}}", map[string]string{"B": "{}"}, false, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := godotenv.Unmarshal(tt.input)
+			opts := []godotenv.Option{}
+			if tt.bash {
+				opts = append(opts, godotenv.WithBash())
+			}
+			got, err := godotenv.New(opts...).Unmarshal(tt.input)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected an error, got nil")
@@ -809,10 +998,24 @@ func TestExpansionNestingIsBounded(t *testing.T) {
 		}
 	})
 
+	t.Run("strip pattern", func(t *testing.T) {
+		t.Parallel()
+
+		deepPattern := strings.Repeat("${GODOTENV_TEST_UNSET_VARIABLE#", 2000) + "x" + strings.Repeat("}", 2000)
+
+		_, err := godotenv.Unmarshal("FOO=" + deepPattern)
+		if err == nil {
+			t.Fatal("expected an error for a deeply nested pattern")
+		}
+		if !strings.Contains(err.Error(), "expansion nesting too deep") {
+			t.Error("expected a nesting-too-deep error")
+		}
+	})
+
 	t.Run("replace replacement", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := godotenv.Unmarshal("A=x\nFOO=${A/a/" + deep + "}")
+		_, err := godotenv.New(godotenv.WithBash()).Unmarshal("A=x\nFOO=${A/a/" + deep + "}")
 		if err == nil {
 			t.Fatal("expected an error for a deeply nested replacement")
 		}
@@ -821,23 +1024,16 @@ func TestExpansionNestingIsBounded(t *testing.T) {
 		}
 	})
 
-	t.Run("replace replacement caret", func(t *testing.T) {
+	t.Run("replace replacement column", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := godotenv.Unmarshal("A=x\nFOO=${A/a/" + deep + "}")
+		_, err := godotenv.New(godotenv.WithBash()).Unmarshal("A=x\nFOO=${A/a/" + deep + "}")
 		if err == nil {
 			t.Fatal("expected an error for a deeply nested replacement")
 		}
 
-		col := -1
-		for _, line := range strings.Split(err.Error(), "\n") {
-			if i := strings.Index(line, "^"); i >= 0 {
-				col = i
-				break
-			}
-		}
-		if col != 32011 {
-			t.Errorf("caret column = %d, want 32011", col)
+		if msg := err.Error(); !strings.Contains(msg, "expansion nesting too deep on line 2, column 32011") {
+			t.Errorf("unexpected error message: %s", msg)
 		}
 	})
 }
@@ -867,49 +1063,81 @@ func TestParameterPatternsAndSubstrings(t *testing.T) {
 		name  string
 		input string
 		want  string
+		bash  bool
 	}{
-		{"strip prefix shortest", "A=hello\nFOO=${A#he}", "llo"},
-		{"strip prefix longest", "A=hello\nFOO=${A##*l}", "o"},
-		{"strip suffix shortest", "A=hello\nFOO=${A%lo}", "hel"},
-		{"strip suffix longest", "A=hello\nFOO=${A%%l*}", "he"},
-		{"strip no match", "A=hello\nFOO=${A#zzz}", "hello"},
-		{"strip star shortest", "A=hello\nFOO=${A#*}", "hello"},
-		{"strip star longest", "A=hello\nFOO=${A##*}", ""},
-		{"strip one char", "A=hello\nFOO=${A#?}", "ello"},
-		{"strip class", "A=hello\nFOO=${A#[a-z]}", "ello"},
-		{"replace first", "A=hello\nFOO=${A/l/L}", "heLlo"},
-		{"replace all", "A=hello\nFOO=${A//l/L}", "heLLo"},
-		{"replace remove", "A=hello\nFOO=${A/l/}", "helo"},
-		{"replace anchored start", "A=hello\nFOO=${A/#he/X}", "Xllo"},
-		{"replace anchored end", "A=hello\nFOO=${A/%lo/X}", "helX"},
-		{"path strip shortest", "A=a/b/c\nFOO=${A#*/}", "b/c"},
-		{"path strip longest", "A=a/b/c\nFOO=${A##*/}", "c"},
-		{"path suffix shortest", "A=a/b/c\nFOO=${A%/*}", "a/b"},
-		{"path suffix longest", "A=a/b/c\nFOO=${A%%/*}", "a"},
-		{"replace dot first", "A=a.b.c\nFOO=${A/./-}", "a-b.c"},
-		{"replace dot all", "A=a.b.c\nFOO=${A//./-}", "a-b-c"},
-		{"substring offset", "A=hello\nFOO=${A:1}", "ello"},
-		{"substring offset len", "A=hello\nFOO=${A:1:3}", "ell"},
-		{"substring negative", "A=hello\nFOO=${A: -2}", "lo"},
-		{"substring negative len", "A=hello\nFOO=${A: -4:2}", "el"},
-		{"substring negative end", "A=hello\nFOO=${A:2:-1}", "ll"},
-		{"substring out of range", "A=hello\nFOO=${A:99}", ""},
-		{"substring far negative", "A=hello\nFOO=${A: -99}", ""},
-		{"strip one character", "A=é\nFOO=${A#?}", ""},
-		{"length in characters", "A=é\nFOO=${#A}", "1"},
-		{"substring by character", "A=héllo\nFOO=${A:1:2}", "él"},
-		{"replace with wildcard", "A=héllo\nFOO=${A/h?llo/X}", "X"},
-		{"strip pattern with brace", "A=a{bX\nFOO=${A#a{b}", "X"},
-		{"strip pattern brace wildcard", "A=a{bX\nFOO=${A##*{b}", "X"},
-		{"replace pattern with unbalanced brace", "A=xyz\nFOO=${A/a{b}", "xyz"},
-		{"replace pattern with brace and replacement", "A=a{bX\nFOO=${A/a{b/REP}", "REPX"},
+		{"strip prefix shortest", "A=hello\nFOO=${A#he}", "llo", false},
+		{"strip prefix longest", "A=hello\nFOO=${A##*l}", "o", false},
+		{"strip suffix shortest", "A=hello\nFOO=${A%lo}", "hel", false},
+		{"strip suffix longest", "A=hello\nFOO=${A%%l*}", "he", false},
+		{"strip no match", "A=hello\nFOO=${A#zzz}", "hello", false},
+		{"strip star shortest", "A=hello\nFOO=${A#*}", "hello", false},
+		{"strip star longest", "A=hello\nFOO=${A##*}", "", false},
+		{"strip one char", "A=hello\nFOO=${A#?}", "ello", false},
+		{"strip class", "A=hello\nFOO=${A#[a-z]}", "ello", false},
+		{"replace first", "A=hello\nFOO=${A/l/L}", "heLlo", true},
+		{"replace all", "A=hello\nFOO=${A//l/L}", "heLLo", true},
+		{"replace remove", "A=hello\nFOO=${A/l/}", "helo", true},
+		{"replace anchored start", "A=hello\nFOO=${A/#he/X}", "Xllo", true},
+		{"replace anchored end", "A=hello\nFOO=${A/%lo/X}", "helX", true},
+		{"path strip shortest", "A=a/b/c\nFOO=${A#*/}", "b/c", false},
+		{"path strip longest", "A=a/b/c\nFOO=${A##*/}", "c", false},
+		{"path suffix shortest", "A=a/b/c\nFOO=${A%/*}", "a/b", false},
+		{"path suffix longest", "A=a/b/c\nFOO=${A%%/*}", "a", false},
+		{"replace dot first", "A=a.b.c\nFOO=${A/./-}", "a-b.c", true},
+		{"replace dot all", "A=a.b.c\nFOO=${A//./-}", "a-b-c", true},
+		{"substring offset", "A=hello\nFOO=${A:1}", "ello", false},
+		{"substring offset len", "A=hello\nFOO=${A:1:3}", "ell", false},
+		{"substring negative", "A=hello\nFOO=${A: -2}", "lo", false},
+		{"substring negative len", "A=hello\nFOO=${A: -4:2}", "el", false},
+		{"substring negative end", "A=hello\nFOO=${A:2:-1}", "ll", false},
+		{"substring out of range", "A=hello\nFOO=${A:99}", "", false},
+		{"substring far negative", "A=hello\nFOO=${A: -99}", "", false},
+		{"strip one character", "A=é\nFOO=${A#?}", "", false},
+		{"length in characters", "A=é\nFOO=${#A}", "1", false},
+		{"substring by character", "A=héllo\nFOO=${A:1:2}", "él", false},
+		{"replace with wildcard", "A=héllo\nFOO=${A/h?llo/X}", "X", true},
+		{"strip pattern with brace", "A=a{bX\nFOO=${A#a{b}", "X", false},
+		{"strip pattern brace wildcard", "A=a{bX\nFOO=${A##*{b}", "X", false},
+		{"replace pattern with unbalanced brace", "A=xyz\nFOO=${A/a{b}", "xyz", true},
+		{"replace pattern with brace and replacement", "A=a{bX\nFOO=${A/a{b/REP}", "REPX", true},
+
+		// expansions inside pattern operands
+		{"expand prefix pattern", "A=abcdef\nB=abc\nFOO=${A#${B}}", "def", false},
+		{"expand replace pattern", "A=abc\nB=b\nFOO=${A/${B}/X}", "aXc", true},
+		{"expanded metacharacters are active", "A=abc\nB=*\nFOO=${A//${B}/X}", "X", true},
+		{"quoted expanded pattern is literal", "A=abc\nB=*\nFOO=${A//\"${B}\"/X}", "abc", true},
+		{"ansi-c quoted pattern is literal", `A=abc` + "\n" + `FOO=${A#$'*'}`, "abc", true},
+		{"escaped metacharacter is literal", `A=a*c` + "\n" + `FOO=${A#\*}`, "a*c", false},
+		{"expanded question mark is active", "A=abc\nB=a?\nFOO=${A#$B}", "c", false},
+		{"nested expanded pattern", "A=abc\nB=ab\nFOO=${A#${B}c}", "", false},
+
+		// zero-width and empty patterns in the // form
+		{"replace all star matches whole", "A=abc\nFOO=${A//*/X}", "X", true},
+		{"replace all star matches empty value", "A=\nFOO=${A//*/X}", "X", true},
+		{"replace all empty pattern is a no-op", "A=abc\nFOO=${A///X}", "abc", true},
+		{"replace all double star matches whole", "A=abc\nFOO=${A//**/X}", "X", true},
+		{"replace all question replaces each rune", "A=héllo\nFOO=${A//?/x}", "xxxxx", true},
+		{"replace all star removes all", "A=abc\nFOO=${A//*/}", "", true},
+		{"replace all greedy star", "A=axbxc\nFOO=${A//x*/X}", "aX", true},
+		{"replace empty pattern is a no-op", "A=abc\nFOO=${A/}", "abc", true},
+		{"replace all empty pattern no-op", "A=abc\nFOO=${A//}", "abc", true},
+
+		// # and % are literal in the // form
+		{"literal hash in double slash", "A=aab\nFOO=${A//#a/X}", "aab", true},
+		{"literal percent in double slash", "A=aab\nFOO=${A//%b/X}", "aab", true},
+		{"anchored empty pattern prepends", "A=abc\nFOO=${A/#/X}", "Xabc", true},
+		{"anchored empty pattern appends", "A=abc\nFOO=${A/%/X}", "abcX", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Unmarshal(tt.input)
+			opts := []godotenv.Option{}
+			if tt.bash {
+				opts = append(opts, godotenv.WithBash())
+			}
+			got, err := godotenv.New(opts...).Unmarshal(tt.input)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -948,6 +1176,88 @@ func TestSubstringBounds(t *testing.T) {
 	}
 }
 
+func TestSubstringArithmetic(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"expanded length", "z=abcdef\nFOO=${z:0:${#z}}", "abcdef"},
+		{"arithmetic offset and length", "z=abcdef\nFOO=${z:1+1:2*2}", "cdef"},
+		{"additive length", "z=abcdef\nFOO=${z:0:3+1}", "abcd"},
+		{"parenthesised", "z=abcdef\nFOO=${z:(1):(2)}", "bc"},
+		{"ternary offset and length", "z=abcdef\nGODOTENV_SUB_J=1\nFOO=${z:GODOTENV_SUB_J?1:0:GODOTENV_SUB_J}", "b"},
+		{"ternary in offset", "z=abcdef\nFOO=${z:1?2:0:2}", "cd"},
+		{"ternary in length", "z=abcdef\nFOO=${z:1:1?2:0}", "bc"},
+		{"subtraction and addition", "z=abcdef\nFOO=${z:2-1:1+1}", "bc"},
+		{"length beyond end", "z=abcdef\nFOO=${z:0:100}", "abcdef"},
+		{"negative offset", "z=abcdef\nFOO=${z: -2}", "ef"},
+		{"negative offset with length", "z=abcdef\nFOO=${z: -2:1}", "e"},
+		{"negative length", "z=abcdef\nFOO=${z:1: -1}", "bcde"},
+		{"zero length", "z=abcdef\nFOO=${z:1:0}", ""},
+		{"modulo", "z=abcdef\nFOO=${z:0:4%3}", "a"},
+		{"logical not", "z=abcdef\nFOO=${z:0:!0}", "a"},
+		{"logical and", "z=abcdef\nFOO=${z:0:1&&2}", "a"},
+		{"logical or", "z=abcdef\nFOO=${z:0:1||0}", "a"},
+		{"equality", "z=abcdef\nFOO=${z:0:1==1}", "a"},
+		{"unset arithmetic variable is zero", "z=abcdef\nFOO=${z:GODOTENV_SUB_J?1:0:GODOTENV_SUB_J}", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
+func TestSubstringArithmeticRecursionIsBounded(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"self reference", "a=a\nFOO=${z:a:1}"},
+		{"mutual reference", "a=b\nb=a\nFOO=${z:a:1}"},
+		{"deep unary", "FOO=${z:" + strings.Repeat("!", 20000) + "0:1}"},
+		{"deep parentheses", "FOO=${z:" + strings.Repeat("(", 20000) + "0" + strings.Repeat(")", 20000) + ":1}"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if _, err := godotenv.Unmarshal(tt.input); err == nil {
+				t.Fatal("expected an error, got none")
+			}
+		})
+	}
+
+	t.Run("moderate nesting still evaluates", func(t *testing.T) {
+		t.Parallel()
+
+		input := "z=abcdef\nFOO=${z:" + strings.Repeat("(", 500) + "0" + strings.Repeat(")", 500) + ":1}"
+
+		got, err := godotenv.Unmarshal(input)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got["FOO"] != "a" {
+			t.Errorf("expected %q, got %q", "a", got["FOO"])
+		}
+	})
+}
+
 func TestUnterminatedGlobClass(t *testing.T) {
 	t.Parallel()
 
@@ -957,6 +1267,40 @@ func TestUnterminatedGlobClass(t *testing.T) {
 	}
 	if want := "x"; got["FOO"] != want {
 		t.Errorf("expected %q, got %q", want, got["FOO"])
+	}
+}
+
+func TestReplacePatternLeadingSlash(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"leading slash pattern replaces all", "a=/a\nOUT=${a///a/}", ""},
+		{"leading slash pattern no match", "A=abc\nOUT=${A///X}", "abc"},
+		{"leading slash pattern with trailing separator", "A=abc\nOUT=${A///X/}", "abc"},
+		{"empty pattern is a slash", "A=a/b/c\nOUT=${A///}", "abc"},
+		{"leading slash with replacement", "a=/a\nOUT=${a///a/x}", "x"},
+		{"leading slash match leaves tail", "A=/a/b\nOUT=${A///a/}", "/b"},
+		{"single slash replaces first", "A=abc\nOUT=${A//b}", "ac"},
+		{"escaped slash pattern", `A=a/b/c` + "\n" + `OUT=${A//\//X}`, "aXbXc"},
+		{"single escaped slash", `A=a/b/c` + "\n" + `OUT=${A/\//X}`, "aXb/c"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["OUT"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["OUT"])
+			}
+		})
 	}
 }
 
@@ -983,12 +1327,162 @@ func TestANSICQuoting(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Unmarshal(tt.input)
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tt.input)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got["FOO"] != tt.want {
 				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
+func TestANSICBracedHexEscapes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty braces truncates the value", `FOO=$'ab\x{}cd'`, "ab"},
+		{"braced hex", `FOO=$'ab\x{41}cd'`, "abAcd"},
+		{"unbraced hex", `FOO=$'ab\x41cd'`, "abAcd"},
+		{"single braced digit", `FOO=$'ab\x{4}cd'`, "ab\x04cd"},
+		{"single unbraced digit", `FOO=$'ab\x4cd'`, "abLd"},
+		{"unterminated brace keeps low byte", `FOO=$'ab\x{cde'`, "ab\xde"},
+		{"brace closes before trailing text", `FOO=$'ab\x{cd}e'`, "ab\xcde"},
+		{"single digit brace", `FOO=$'ab\x{c}de'`, "ab\fde"},
+		{"unterminated multi-digit", `FOO=$'\x{abcX'`, "\xbcX"},
+		{"brace then close", `FOO=$'\x{ab}cX'`, "\xabcX"},
+		{"empty braces only", `FOO=$'\x{}X'`, ""},
+		{"open brace then text", `FOO=$'\x{X'`, ""},
+		{"long run keeps low byte", `FOO=$'\x{01234567X'`, "gX"},
+		{"braced hex then text", `FOO=$'\x{41}b'`, "Ab"},
+		{"empty braces with tail", `FOO=$'\x{}bc'`, ""},
+		{"single digit then text", `FOO=$'\x{1}bcd'`, "\x01bcd"},
+		{"unterminated bde", `FOO=$'\x{bde'`, "\xde"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
+func TestSingleQuoteInsideBracedExpansionInDoubleQuotes(t *testing.T) {
+	t.Parallel()
+
+	lookup := func([]byte) ([]byte, bool) { return nil, false }
+	tests := []struct {
+		name  string
+		input string
+		want  string
+		bash  bool
+	}{
+		{"word keeps quotes and expands", `foo=bar` + "\n" + `OUT="${foo+'$foo'}"`, "'bar'", false},
+		{"posix word quote does not hide the closing brace", `OUT="${GODOTENV_SQ_UNSET:-'}'}"`, "''}", false},
+		{"posix two quoted words", `OUT="${GODOTENV_SQ_UNSET:-'}'}'}"`, "''}'}", false},
+		{"bash word quote hides the closing brace", `OUT="${GODOTENV_SQ_UNSET:-'}'}"`, "'}'", true},
+		{"bash two quoted words", `OUT="${GODOTENV_SQ_UNSET:-'}'}'}"`, "'}''}", true},
+		{"pattern quote is removed", `x="}"` + "\n" + `OUT="${x##'}'}"`, "", false},
+		{"replacement quote is removed", "x=ab\nOUT=\"${x/b/'Z'}\"", "aZ", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				got map[string]string
+				err error
+			)
+			if tt.bash {
+				got, err = godotenv.New(godotenv.WithBash()).Parse(strings.NewReader(tt.input))
+			} else {
+				got, err = godotenv.ParseWithLookup(strings.NewReader(tt.input), lookup)
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["OUT"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["OUT"])
+			}
+		})
+	}
+}
+
+func TestDoubleQuotedBracedWordOperand(t *testing.T) {
+	t.Parallel()
+
+	lookup := func([]byte) ([]byte, bool) { return nil, false }
+	tests := []struct {
+		name  string
+		input string
+		want  string
+		bash  bool
+	}{
+		// POSIX mode follows dash: a single quote in the word is an ordinary
+		// byte, and a backslash before a non-special byte stays literal.
+		{"posix single quote is literal", `OUT="${GODOTENV_WORD_UNSET-'x'}"`, "'x'", false},
+		{"posix backslash e is literal", `OUT="${GODOTENV_WORD_UNSET-\e}"`, `\e`, false},
+		{"posix backslash q is literal", `OUT="${GODOTENV_WORD_UNSET-\q}"`, `\q`, false},
+		{"posix backslash n is literal", `OUT="${GODOTENV_WORD_UNSET-\n}"`, `\n`, false},
+		{"posix backslash t is literal", `OUT="${GODOTENV_WORD_UNSET-\t}"`, `\t`, false},
+		{"posix colon single quote is literal", `OUT="${GODOTENV_WORD_UNSET:-'x'}"`, "'x'", false},
+		{"posix colon backslash e is literal", `OUT="${GODOTENV_WORD_UNSET:-\e}"`, `\e`, false},
+		{"posix single quote does not group", `OUT="${GODOTENV_WORD_UNSET-'}'}"`, "''}", false},
+		{"posix colon single quote does not group", `OUT="${GODOTENV_WORD_UNSET:-'}'}"`, "''}", false},
+		{"posix backslash escapes closing brace", `OUT="${GODOTENV_WORD_UNSET-\}}"`, "}", false},
+		{"posix backslash open brace is literal", `OUT="${GODOTENV_WORD_UNSET-\{}"`, `\{`, false},
+		{"posix double backslash", `OUT="${GODOTENV_WORD_UNSET-\\}"`, `\`, false},
+		{"posix backslash dollar", `OUT="${GODOTENV_WORD_UNSET-\$}"`, "$", false},
+		{"posix ansi quote stays literal", `OUT="${GODOTENV_WORD_UNSET-$'z'}"`, `$'z'`, false},
+		{"posix skipped word ends at first brace", "v=abc\n" + `OUT="${v-'}'}"`, "abc'}", false},
+		// bash mode keeps grouping the word's single quotes and expands $'...'.
+		{"bash single quote is literal", `OUT="${GODOTENV_WORD_UNSET-'x'}"`, "'x'", true},
+		{"bash backslash e is literal", `OUT="${GODOTENV_WORD_UNSET-\e}"`, `\e`, true},
+		{"bash backslash q is literal", `OUT="${GODOTENV_WORD_UNSET-\q}"`, `\q`, true},
+		{"bash backslash n is literal", `OUT="${GODOTENV_WORD_UNSET-\n}"`, `\n`, true},
+		{"bash backslash t is literal", `OUT="${GODOTENV_WORD_UNSET-\t}"`, `\t`, true},
+		{"bash colon single quote is literal", `OUT="${GODOTENV_WORD_UNSET:-'x'}"`, "'x'", true},
+		{"bash colon backslash e is literal", `OUT="${GODOTENV_WORD_UNSET:-\e}"`, `\e`, true},
+		{"bash single quote groups", `OUT="${GODOTENV_WORD_UNSET-'}'}"`, "'}'", true},
+		{"bash colon single quote groups", `OUT="${GODOTENV_WORD_UNSET:-'}'}"`, "'}'", true},
+		{"bash backslash escapes closing brace", `OUT="${GODOTENV_WORD_UNSET-\}}"`, "}", true},
+		{"bash backslash open brace is literal", `OUT="${GODOTENV_WORD_UNSET-\{}"`, `\{`, true},
+		{"bash ansi quote expands", `OUT="${GODOTENV_WORD_UNSET-$'z'}"`, "z", true},
+		{"bash skipped word groups quotes", "v=abc\n" + `OUT="${v-'}'}"`, "abc", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				got map[string]string
+				err error
+			)
+			if tt.bash {
+				got, err = godotenv.New(godotenv.WithBash()).Parse(strings.NewReader(tt.input))
+			} else {
+				got, err = godotenv.ParseWithLookup(strings.NewReader(tt.input), lookup)
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["OUT"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["OUT"])
 			}
 		})
 	}
@@ -1004,13 +1498,15 @@ func TestUnicodeEscapeInDoubleQuotes(t *testing.T) {
 		{"latin", `FOO="caf\u00e9"`, "café"},
 		{"hex", `FOO="\x41"`, "A"},
 		{"astral", `FOO="\U0001F600"`, "😀"},
+		{"malformed unicode keeps backslash", `FOO="\u"`, `\u`},
+		{"malformed unicode keeps backslash and tail", `FOO="\uZZ"`, `\uZZ`},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Unmarshal(tt.input)
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tt.input)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1021,45 +1517,384 @@ func TestUnicodeEscapeInDoubleQuotes(t *testing.T) {
 	}
 }
 
-func TestWithPOSIX(t *testing.T) {
+func TestDoubleQuoteBellAndVerticalTab(t *testing.T) {
 	tests := []struct {
-		name    string
-		opts    []godotenv.Option
-		input   string
-		want    string
-		wantErr bool
+		name  string
+		opts  []godotenv.Option
+		input string
+		want  string
 	}{
-		{"default double quote escapes", nil, `FOO="a\nb"`, "a\nb", false},
-		{"posix double quote literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\nb"`, `a\nb`, false},
-		{"posix tab literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\tb"`, `a\tb`, false},
-		{"posix escaped quote", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\"b"`, `a"b`, false},
-		{"posix escaped backslash", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\\b"`, `a\b`, false},
-		{"posix escaped dollar", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\$b"`, "a$b", false},
-		{"posix unknown escape literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="a\qb"`, `a\qb`, false},
-		{"posix unicode literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="\u0041"`, `\u0041`, false},
-		{"posix hex literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="\x41"`, `\x41`, false},
-		{"posix astral literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO="\U0001F600"`, `\U0001F600`, false},
-		{"posix line continuation", []godotenv.Option{godotenv.WithPOSIX()}, "FOO=\"a\\\nb\"", "ab", false},
-		{"default single quote escape errors", nil, `FOO='a\'`, "", true},
-		{"posix single quote backslash literal", []godotenv.Option{godotenv.WithPOSIX()}, `FOO='a\'`, `a\`, false},
-		{"posix single quote backslash", []godotenv.Option{godotenv.WithPOSIX()}, `FOO='a\b'`, `a\b`, false},
-		{"posix ansi-c still expands", []godotenv.Option{godotenv.WithPOSIX()}, `FOO=$'a\nb'`, "a\nb", false},
+		{"posix bell literal", nil, `FOO="a\ab"`, `a\ab`},
+		{"posix vertical tab literal", nil, `FOO="a\vb"`, `a\vb`},
+		{"bash bell", []godotenv.Option{godotenv.WithBash()}, `FOO="a\ab"`, "a\ab"},
+		{"bash vertical tab", []godotenv.Option{godotenv.WithBash()}, `FOO="a\vb"`, "a\vb"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			got, err := godotenv.New(tt.opts...).Unmarshal(tt.input)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("expected an error, got nil")
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got["FOO"] != tt.want {
 				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
+func TestMarshalRoundTripControlEscapes(t *testing.T) {
+	t.Parallel()
+
+	src := map[string]string{
+		"BELL": "x\ay",
+		"VT":   "x\vy",
+		"MIX":  "\a\v\n\t\r",
+	}
+	out, err := godotenv.Marshal(src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := godotenv.New(godotenv.WithBash()).Unmarshal(out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(src, got) {
+		t.Errorf("expected round trip %v, got %v", src, got)
+	}
+}
+
+func TestMarshalEscapesShellSpecials(t *testing.T) {
+	t.Parallel()
+
+	src := map[string]string{
+		"DOLLAR":   "a$b",
+		"BRACED":   "${X}",
+		"CMDSUB":   "$(echo hi)",
+		"BACKTICK": "`echo hi`",
+	}
+	out, err := godotenv.Marshal(src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, special := range []string{"$", "`"} {
+		if strings.Contains(strings.ReplaceAll(out, "\\"+special, ""), special) {
+			t.Errorf("output leaves %q unescaped, so sourcing it would expand:\n%s", special, out)
+		}
+	}
+
+	got, err := godotenv.Unmarshal(out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(src, got) {
+		t.Errorf("expected round trip %v, got %v", src, got)
+	}
+}
+
+func TestPOSIXDefaults(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"double quote escape stays literal", `FOO="a\nb"`, `a\nb`},
+		{"tab stays literal", `FOO="a\tb"`, `a\tb`},
+		{"escaped quote", `FOO="a\"b"`, `a"b`},
+		{"escaped backslash", `FOO="a\\b"`, `a\b`},
+		{"escaped dollar", `FOO="a\$b"`, "a$b"},
+		{"unknown escape literal", `FOO="a\qb"`, `a\qb`},
+		{"unicode literal", `FOO="\u0041"`, `\u0041`},
+		{"hex literal", `FOO="\x41"`, `\x41`},
+		{"astral literal", `FOO="\U0001F600"`, `\U0001F600`},
+		{"line continuation", "FOO=\"a\\\nb\"", "ab"},
+		{"single quote backslash literal", `FOO='a\'`, `a\`},
+		{"single quote backslash", `FOO='a\b'`, `a\b`},
+		{"ansi-c stays literal", `FOO=$'a\nb'`, `$a\nb`},
+		{"dollar double quote stays literal", `FOO=$"a\nb"`, `$a\nb`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.New().Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
+func TestWithBash(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"double quote escape", `FOO="a\nb"`, "a\nb"},
+		{"tab", `FOO="a\tb"`, "a\tb"},
+		{"escaped quote", `FOO="a\"b"`, `a"b`},
+		{"escaped backslash", `FOO="a\\b"`, `a\b`},
+		{"escaped dollar", `FOO="a\$b"`, "a$b"},
+		{"unknown escape drops the backslash", `FOO="a\qb"`, `aqb`},
+		{"unicode", `FOO="\u0041"`, "A"},
+		{"hex", `FOO="\x41"`, "A"},
+		{"astral", `FOO="\U0001F600"`, "😀"},
+		{"line continuation", "FOO=\"a\\\nb\"", "ab"},
+		{"ansi-c expands", `FOO=$'a\nb'`, "a\nb"},
+		{"dollar double quote expands", `FOO=$"a\nb"`, "a\nb"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
+	}
+}
+
+func TestReplacementFamilyInDefaultMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"A=axb\nFOO=${A/x/y}", "ayb"},
+		{"A=xaxb\nFOO=${A//x/y}", "yayb"},
+		{"A=xaxb\nFOO=${A/#x/y}", "yaxb"},
+		{"A=xaxb\nFOO=${A/%b/y}", "xaxy"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
+
+			for _, opts := range [][]godotenv.Option{nil, {godotenv.WithBash()}} {
+				got, err := godotenv.New(opts...).Unmarshal(tt.input)
+				if err != nil {
+					t.Fatalf("Unmarshal(%q): %v", tt.input, err)
+				}
+				if got["FOO"] != tt.want {
+					t.Errorf("Unmarshal(%q) = %q, want %q", tt.input, got["FOO"], tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestArithmeticExpansion(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"addition", "FOO=$((1+2))", "3", false},
+		{"precedence", "FOO=$((1+2*3))", "7", false},
+		{"nested parens", "FOO=$((1+(2*3)))", "7", false},
+		{"variable", "A=4\nFOO=$((A+1))", "5", false},
+		{"dollar variable", "A=4\nFOO=$((1+$A))", "5", false},
+		{"hex", "FOO=$((0x10+1))", "17", false},
+		{"inside double quotes", `FOO="$((2*3))"`, "6", false},
+		{"inside word", "FOO=${GODOTENV_DIFF_NOPE:-$((2*3))}", "6", false},
+		{"unset variable is zero", "FOO=$((GODOTENV_DIFF_NOPE+5))", "5", false},
+		{"division by zero", "FOO=$((1/0))", "", true},
+		{"modulo by zero", "FOO=$((1%0))", "", true},
+		{"syntax error", "FOO=$((1+))", "", true},
+		{"unclosed", "FOO=$((1+2)", "", true},
+	}
+
+	modes := []struct {
+		name string
+		opts []godotenv.Option
+	}{
+		{"posix", nil},
+		{"bash", []godotenv.Option{godotenv.WithBash()}},
+	}
+
+	for _, mode := range modes {
+		for _, tt := range tests {
+			t.Run(mode.name+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				got, err := godotenv.New(mode.opts...).Unmarshal(tt.input)
+				if tt.wantErr {
+					if err == nil {
+						t.Fatal("expected an error, got nil")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if got["FOO"] != tt.want {
+					t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+				}
+			})
+		}
+	}
+}
+
+func TestArithmeticEmpty(t *testing.T) {
+	t.Parallel()
+
+	if _, err := godotenv.Unmarshal("FOO=$(( ))"); err == nil {
+		t.Error("posix: expected an error for empty arithmetic")
+	}
+
+	got, err := godotenv.New(godotenv.WithBash()).Unmarshal("FOO=$(( ))")
+	if err != nil {
+		t.Fatalf("bash: unexpected error: %v", err)
+	}
+	if got["FOO"] != "0" {
+		t.Errorf("bash: expected %q, got %q", "0", got["FOO"])
+	}
+}
+
+// shellCase pairs a dotenv line with the equivalent shell statement, so a real
+// shell can be asked for the expected value.
+type shellCase struct {
+	name   string
+	input  string
+	script string
+}
+
+func runShell(t *testing.T, shell, script string) (out string, ok bool) {
+	t.Helper()
+
+	cmd := exec.Command(shell, "-c", script)
+	cmd.Env = []string{"LC_ALL=C"}
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &bytes.Buffer{}
+
+	if err := cmd.Run(); err != nil {
+		return "", false
+	}
+
+	return stdout.String(), true
+}
+
+func findShell(t *testing.T, candidates ...string) string {
+	t.Helper()
+
+	for _, candidate := range candidates {
+		if path, err := exec.LookPath(candidate); err == nil {
+			return path
+		}
+	}
+	t.Skipf("none of %v found", candidates)
+
+	return ""
+}
+
+func TestPOSIXMatchesDash(t *testing.T) {
+	t.Parallel()
+
+	shell := findShell(t, "/bin/dash")
+
+	cases := []shellCase{
+		{"dq tab stays literal", `FOO="a\tb"`, `FOO="a\tb"; printf '%s' "$FOO"`},
+		{"dq escaped dollar", "X=hello\nFOO=\"a\\$X\"", `X=hello; FOO="a\$X"; printf '%s' "$FOO"`},
+		{"dq escaped backslash", `FOO="a\\b"`, `FOO="a\\b"; printf '%s' "$FOO"`},
+		{"ansi-c is literal", `FOO=$'a\tb'`, `FOO=$'a\tb'; printf '%s' "$FOO"`},
+		{"dollar double quote is literal", `FOO=$"a\nb"`, `FOO=$"a\nb"; printf '%s' "$FOO"`},
+		{"arithmetic", `FOO=$((1+2*3))`, `FOO=$((1+2*3)); printf '%s' "$FOO"`},
+		{"strip prefix", "A=hello\nFOO=${A#he}", `A=hello; FOO=${A#he}; printf '%s' "$FOO"`},
+		{"strip suffix", "A=abc\nFOO=${A%bc}", `A=abc; FOO=${A%bc}; printf '%s' "$FOO"`},
+		{"length", "A=hello\nFOO=${#A}", `A=hello; FOO=${#A}; printf '%s' "$FOO"`},
+		{"default word", `FOO=${GODOTENV_DIFF_NOPE:-fallback}`, `FOO=${GODOTENV_DIFF_NOPE:-fallback}; printf '%s' "$FOO"`},
+	}
+
+	lookup := func([]byte) ([]byte, bool) { return nil, false }
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			want, ok := runShell(t, shell, tc.script)
+			if !ok {
+				t.Fatalf("dash failed: %s", tc.script)
+			}
+			got, err := godotenv.ParseWithLookup(strings.NewReader(tc.input), lookup)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != want {
+				t.Errorf("dash %q, parser %q", want, got["FOO"])
+			}
+		})
+	}
+
+	t.Run("replacement is a deliberate extension", func(t *testing.T) {
+		t.Parallel()
+
+		if _, ok := runShell(t, shell, `A=abc; FOO=${A/b/X}; printf '%s' "$FOO"`); ok {
+			t.Fatal("dash unexpectedly accepted a replacement")
+		}
+
+		got, err := godotenv.ParseWithLookup(strings.NewReader("A=abc\nFOO=${A/b/X}"), lookup)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got["FOO"] != "aXc" {
+			t.Errorf("parser %q, want %q", got["FOO"], "aXc")
+		}
+	})
+}
+
+func TestBashMatchesBash(t *testing.T) {
+	t.Parallel()
+
+	shell := findShell(t, "/opt/homebrew/bin/bash", "bash")
+
+	cases := []shellCase{
+		{"ansi-c tab", `FOO=$'a\tb'`, `FOO=$'a\tb'; printf '%s' "$FOO"`},
+		{"ansi-c hex", `FOO=$'a\x41b'`, `FOO=$'a\x41b'; printf '%s' "$FOO"`},
+		{"ansi-c newline", `FOO=$'a\nb'`, `FOO=$'a\nb'; printf '%s' "$FOO"`},
+		{"dollar double quote", `FOO=$"hello"`, `FOO=$"hello"; printf '%s' "$FOO"`},
+		{"replace first", "A=hello\nFOO=${A/l/L}", `A=hello; FOO=${A/l/L}; printf '%s' "$FOO"`},
+		{"replace all", "A=hello\nFOO=${A//l/L}", `A=hello; FOO=${A//l/L}; printf '%s' "$FOO"`},
+		{"replace anchored start", "A=hello\nFOO=${A/#he/X}", `A=hello; FOO=${A/#he/X}; printf '%s' "$FOO"`},
+		{"replace anchored end", "A=hello\nFOO=${A/%lo/X}", `A=hello; FOO=${A/%lo/X}; printf '%s' "$FOO"`},
+		{"strip single-quoted pattern", "A=abcd\nFOO=${A#'ab'}", `A=abcd; FOO=${A#'ab'}; printf '%s' "$FOO"`},
+		{"strip double-quoted pattern", "A=abcd\nFOO=\"${A#\"ab\"}\"", `A=abcd; FOO="${A#"ab"}"; printf '%s' "$FOO"`},
+		{"brace pattern", "A=}abc\nFOO=\"${A#'}'}\"", `A=}abc; FOO="${A#'}'}"; printf '%s' "$FOO"`},
+		{"longest brace pattern", "A=}}abc\nFOO=\"${A##'}'}\"", `A=}}abc; FOO="${A##'}'}"; printf '%s' "$FOO"`},
+		{"arithmetic", `FOO=$((1+2*3))`, `FOO=$((1+2*3)); printf '%s' "$FOO"`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			want, ok := runShell(t, shell, tc.script)
+			if !ok {
+				t.Fatalf("bash failed: %s", tc.script)
+			}
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tc.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != want {
+				t.Errorf("bash %q, parser %q", want, got["FOO"])
 			}
 		})
 	}
@@ -1081,30 +1916,34 @@ func TestExpand(t *testing.T) {
 		in      string
 		want    string
 		wantErr bool
+		opts    []godotenv.Option
 	}{
-		{"braced", "path=${HOME}/x", "path=/home/me/x", false},
-		{"unbraced", "path=$HOME/x", "path=/home/me/x", false},
-		{"default", "${MISSING:-fallback}", "fallback", false},
-		{"dash default", "${MISSING-fallback}", "fallback", false},
-		{"colon plus on empty", "${EMPTY:+set}", "", false},
-		{"plus on empty", "${EMPTY+set}", "set", false},
-		{"recursive", "${MISSING:-${HOME}}", "/home/me", false},
-		{"braced unset errors", "${MISSING}", "", true},
-		{"unbraced unset errors", "$MISSING", "", true},
-		{"ansi-c stays literal", `$'a\nb'`, `$'a\nb'`, false},
-		{"positional stays literal", "$1", "$1", false},
-		{"special stays literal", "$?", "$?", false},
-		{"command substitution stays literal", "$(echo hi)", "$(echo hi)", false},
-		{"backticks stay literal", "`echo hi`", "`echo hi`", false},
-		{"trailing dollar", "cost is $", "cost is $", false},
-		{"plain text", "just a token", "just a token", false},
+		{"braced", "path=${HOME}/x", "path=/home/me/x", false, nil},
+		{"unbraced", "path=$HOME/x", "path=/home/me/x", false, nil},
+		{"default", "${MISSING:-fallback}", "fallback", false, nil},
+		{"dash default", "${MISSING-fallback}", "fallback", false, nil},
+		{"colon plus on empty", "${EMPTY:+set}", "", false, nil},
+		{"plus on empty", "${EMPTY+set}", "set", false, nil},
+		{"recursive", "${MISSING:-${HOME}}", "/home/me", false, nil},
+		{"braced unset is empty", "${MISSING}", "", false, nil},
+		{"unbraced unset is empty", "$MISSING", "", false, nil},
+		{"braced unset errors", "${MISSING}", "", true, []godotenv.Option{godotenv.WithUnboundError()}},
+		{"unbraced unset errors", "$MISSING", "", true, []godotenv.Option{godotenv.WithUnboundError()}},
+		{"ansi-c stays literal", `$'a\nb'`, `$'a\nb'`, false, nil},
+		{"ansi-c with WithBash", `$'a\tb'`, "a\tb", false, []godotenv.Option{godotenv.WithBash()}},
+		{"positional stays literal", "$1", "$1", false, nil},
+		{"special stays literal", "$?", "$?", false, nil},
+		{"command substitution stays literal", "$(echo hi)", "$(echo hi)", false, nil},
+		{"backticks stay literal", "`echo hi`", "`echo hi`", false, nil},
+		{"trailing dollar", "cost is $", "cost is $", false, nil},
+		{"plain text", "just a token", "just a token", false, nil},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Expand(tt.in, lookup)
+			got, err := godotenv.Expand(tt.in, lookup, tt.opts...)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected an error, got nil")
@@ -1128,16 +1967,18 @@ func TestLineContinuationWithCRLF(t *testing.T) {
 		name  string
 		input string
 		want  string
+		opts  []godotenv.Option
 	}{
-		{"unquoted", "FOO=a\\\r\nb", "ab"},
-		{"double quoted", "FOO=\"a\\\r\nb\"", "ab"},
+		{"unquoted", "FOO=a\\\r\nb", "ab", nil},
+		{"posix double quoted keeps the backslash", "FOO=\"a\\\r\nb\"", "a\\\r\nb", nil},
+		{"bash double quoted is a continuation", "FOO=\"a\\\r\nb\"", "ab", []godotenv.Option{godotenv.WithBash()}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got, err := godotenv.Unmarshal(tt.input)
+			got, err := godotenv.New(tt.opts...).Unmarshal(tt.input)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -1182,37 +2023,54 @@ func TestLineEndings(t *testing.T) {
 func TestANSICQuotingContext(t *testing.T) {
 	t.Parallel()
 
-	loader := godotenv.New(godotenv.WithPOSIX())
-	got, err := loader.Unmarshal(`FOO="$'a\nb'"`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if want := `$'a\nb'`; got["FOO"] != want {
-		t.Errorf("expected %q, got %q", want, got["FOO"])
-	}
-
-	word, err := godotenv.Unmarshal(`FOO=${GODOTENV_TEST_MISSING:-$'a\nb'}`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if want := "a\nb"; word["FOO"] != want {
-		t.Errorf("expected %q, got %q", want, word["FOO"])
+	posix := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"ansi-c inside double quotes is literal", `FOO="$'a\nb'"`, `$'a\nb'`},
+		{"ansi-c in an unquoted word is literal", `FOO=${GODOTENV_TEST_MISSING:-$'a\nb'}`, `$a\nb`},
+		{"dollar double quote keeps the dollar", `FOO=$"a$'a\nb'b"`, `$a$'a\nb'b`},
+		{"dollar double quote keeps escapes", `FOO=$"a\n$'a\nb'b"`, `$a\n$'a\nb'b`},
 	}
 
-	translated, err := loader.Unmarshal(`FOO=$"a$'a\nb'b"`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if want := `a$'a\nb'b`; translated["FOO"] != want {
-		t.Errorf("expected %q, got %q", want, translated["FOO"])
+	for _, tt := range posix {
+		t.Run("posix "+tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
 	}
 
-	translatedEscapes, err := loader.Unmarshal(`FOO=$"a\n$'a\nb'b"`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	bash := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"ansi-c inside double quotes is not decoded", `FOO="$'a\nb'"`, "$'a\nb'"},
+		{"ansi-c in an unquoted word expands", `FOO=${GODOTENV_TEST_MISSING:-$'a\nb'}`, "a\nb"},
+		{"dollar double quote behaves as double quotes", `FOO=$"a$'a\nb'b"`, "a$'a\nb'b"},
+		{"dollar double quote keeps escapes", `FOO=$"a\n$'a\nb'b"`, "a\n$'a\nb'b"},
 	}
-	if want := `a\n$'a\nb'b`; translatedEscapes["FOO"] != want {
-		t.Errorf("expected %q, got %q", want, translatedEscapes["FOO"])
+
+	for _, tt := range bash {
+		t.Run("bash "+tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := godotenv.New(godotenv.WithBash()).Unmarshal(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got["FOO"] != tt.want {
+				t.Errorf("expected %q, got %q", tt.want, got["FOO"])
+			}
+		})
 	}
 }
 
@@ -1243,34 +2101,39 @@ func TestParseErrorMessages(t *testing.T) {
 		name  string
 		input string
 		want  string
+		bash  bool
 	}{
-		{"empty key", "=foo", "empty key"},
-		{"key starting with a digit", "1FOO=1", "invalid character in key name"},
-		{"key starting with a dot", ".FOO=1", "invalid character in key name"},
-		{"caret points at the offending column", "A=1\nB C=2", "B C=2\n\t ^ Right here"},
-		{"unclosed expansion", "A=${FOO", "unexpected EOF while looking for matching '}'"},
-		{"unclosed expansion before a newline", "A=${FOO\nB=1", "unexpected EOF while looking for matching '}'"},
-		{"unclosed expansion after a colon", "A=${FOO:", "unexpected EOF while looking for matching '}'"},
-		{"caret at the substring operator", "FOO=hello\nA=${FOO:x}", "bad substitution: invalid substring on line 2\n\tA=${FOO:x}\n\t        ^"},
-		{"caret at the unmatched quote", "A=$'x", "unmatched single quote on line 1\n\tA=$'x\n\t   ^"},
-		{"caret at the substring length", "A=hello\nFOO=${A:1:2:3}", "bad substitution: invalid substring length on line 2\n\tFOO=${A:1:2:3}\n\t        ^"},
-		{"unclosed expansion with assignment", "A=${FOO=", "unexpected EOF while looking for matching '}' on line 1\n\tA=${FOO=\n\t   ^"},
-		{"closed assignment operator", "A=${FOO=}", "bad substitution: assignment is not supported"},
-		{"caret at the unsupported operator", "FOO=${BAR@x}", "bad substitution: unsupported operator on line 1\n\tFOO=${BAR@x}\n\t         ^"},
-		{"caret at the assignment operator", "FOO=${BAR=}", "bad substitution: assignment is not supported on line 1\n\tFOO=${BAR=}\n\t         ^"},
-		{"caret at the missing modifier", "FOO=${BAR:}", "bad substitution: no modifier on line 1\n\tFOO=${BAR:}\n\t         ^"},
-		{"caret at the empty nested expansion", "FOO=${BAR:-${}}", "bad substitution: empty on line 1\n\tFOO=${BAR:-${}}\n\t            ^"},
-		{"unclosed length operator", "A=${#FOO\nB=1", "unexpected EOF while looking for matching '}'"},
-		{"unclosed expansion with empty name", "FOO=${ ", "unexpected EOF while looking for matching '}'"},
-		{"unclosed expansion starting with a quote", "A=${'000", "unexpected EOF while looking for matching '}'"},
-		{"closed expansion with invalid name start", "FOO=${ x}", "bad substitution"},
+		{"empty key", "=foo", "empty key", false},
+		{"key starting with a digit", "1FOO=1", "invalid character in key name", false},
+		{"key starting with a dot", ".FOO=1", "invalid character in key name", false},
+		{"column of the offending key character", "A=1\nB C=2", "unexpected whitespace in key on line 2, column 2", false},
+		{"unclosed expansion", "A=${FOO", "unexpected EOF while looking for matching '}'", false},
+		{"unclosed expansion before a newline", "A=${FOO\nB=1", "unexpected EOF while looking for matching '}'", false},
+		{"unclosed expansion after a colon", "A=${FOO:", "unexpected EOF while looking for matching '}'", false},
+		{"column of the substring operator", "FOO=hello\nA=${FOO:1+}", "bad substitution: invalid substring on line 2, column 9", false},
+		{"column of the unmatched quote", "A=$'x", "unmatched single quote on line 1, column 4", true},
+		{"column of the substring length", "A=hello\nFOO=${A:1:2:3}", "bad substitution: invalid substring length on line 2, column 9", false},
+		{"unclosed expansion with assignment", "A=${FOO=", "unexpected EOF while looking for matching '}' on line 1, column 4", false},
+		{"closed assignment operator", "A=${FOO=}", "bad substitution: assignment is not supported", false},
+		{"column of the unsupported operator", "FOO=${BAR@x}", "bad substitution: unsupported operator on line 1, column 10", false},
+		{"column of the assignment operator", "FOO=${BAR=}", "bad substitution: assignment is not supported on line 1, column 10", false},
+		{"column of the missing modifier", "FOO=${BAR:}", "bad substitution: no modifier on line 1, column 10", false},
+		{"column of the empty nested expansion", "FOO=${BAR:-${}}", "bad substitution: empty on line 1, column 13", false},
+		{"unclosed length operator", "A=${#FOO\nB=1", "unexpected EOF while looking for matching '}'", false},
+		{"unclosed expansion with empty name", "FOO=${ ", "unexpected EOF while looking for matching '}'", false},
+		{"unclosed expansion starting with a quote", "A=${'000", "unexpected EOF while looking for matching '}'", false},
+		{"closed expansion with invalid name start", "FOO=${ x}", "bad substitution", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, err := godotenv.Unmarshal(tt.input)
+			opts := []godotenv.Option{}
+			if tt.bash {
+				opts = append(opts, godotenv.WithBash())
+			}
+			_, err := godotenv.New(opts...).Unmarshal(tt.input)
 			if err == nil {
 				t.Fatalf("expected an error for %q", tt.input)
 			}
@@ -1280,12 +2143,24 @@ func TestParseErrorMessages(t *testing.T) {
 		})
 	}
 
+	t.Run("error format is a single line", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := godotenv.Unmarshal("A=1\nB C=2")
+		if err == nil {
+			t.Fatal("expected an error")
+		}
+		if want := "godotenv: unexpected whitespace in key on line 2, column 2"; err.Error() != want {
+			t.Errorf("expected %q, got %q", want, err.Error())
+		}
+	})
+
 	t.Run("unbound variable in Expand", func(t *testing.T) {
 		t.Parallel()
 
 		_, err := godotenv.Expand("$GODOTENV_TEST_UNSET_VARIABLE", func([]byte) ([]byte, bool) {
 			return nil, false
-		})
+		}, godotenv.WithUnboundError())
 		if err == nil {
 			t.Fatal("expected an error")
 		}
@@ -1309,14 +2184,27 @@ func TestParseErrorMessages(t *testing.T) {
 	})
 }
 
+func TestParseErrorControlCharacter(t *testing.T) {
+	t.Parallel()
+
+	_, err := godotenv.Unmarshal("FOO=a\x01b")
+	if err == nil {
+		t.Fatal("expected an error for the control character")
+	}
+	if want := "godotenv: invalid value character: 0x01 on line 1, column 6"; err.Error() != want {
+		t.Errorf("expected %q, got %q", want, err.Error())
+	}
+}
+
 // just test some single lines to show the general idea
 func TestWrite(t *testing.T) {
 	tests := []struct {
 		env      string
 		expected string
+		bash     bool
 	}{
-		// values are always double-quoted
-		{env: `key="test\${hello}test"`, expected: `key="test${hello}test"`},
+		// values are always double-quoted, and $ is escaped so sourcing is safe
+		{env: `key="test\${hello}test"`, expected: `key="test\${hello}test"`},
 		// values are always double-quoted
 		{env: `key=value`, expected: `key="value"`},
 		// non-nested double-quotes are seen as strings
@@ -1328,7 +2216,7 @@ func TestWrite(t *testing.T) {
 		// nested single quoted variables are left alone
 		{env: `key="va'lu'e"`, expected: `key="va'lu'e"`},
 		// newlines, backslashes, and some other special chars are escaped
-		{env: `foo="\n\r\\r!"`, expected: `foo="\n\r\\r!"`},
+		{env: `foo="\n\r\\r!"`, expected: `foo="\n\r\\r!"`, bash: true},
 		// lines should be sorted
 		{env: "foo=bar\nbaz=buzz", expected: "baz=\"buzz\"\nfoo=\"bar\""},
 		// integers should not be quoted
@@ -1344,12 +2232,57 @@ func TestWrite(t *testing.T) {
 		t.Run(tt.env, func(t *testing.T) {
 			t.Parallel()
 
-			envMap, _ := godotenv.Unmarshal(tt.env)
+			opts := []godotenv.Option{}
+			if tt.bash {
+				opts = append(opts, godotenv.WithBash())
+			}
+			envMap, _ := godotenv.New(opts...).Unmarshal(tt.env)
 			actual, _ := godotenv.Marshal(envMap)
 			if tt.expected != actual {
 				t.Errorf("Expected '%v' (%v) to write as '%v', got '%v' instead.", tt.env, envMap, tt.expected, actual)
 			}
 		})
+	}
+}
+
+func TestWriteReadRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	src := map[string]string{
+		"PLAIN":     "value",
+		"INTEGER":   "007",
+		"DOLLAR":    "a$b",
+		"BRACED":    "${X}",
+		"CMDSUB":    "$(echo hi)",
+		"BACKTICK":  "`echo hi`",
+		"CONTROL":   "x\ay\v",
+		"NEWLINE":   "1\n2",
+		"QUOTE":     `va"lu"e`,
+		"BACKSLASH": `a\b`,
+	}
+
+	dir := t.TempDir()
+	name := filepath.Join(dir, ".env")
+	if err := godotenv.Write(src, name); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, special := range []string{"$", "`"} {
+		if strings.Contains(strings.ReplaceAll(string(content), "\\"+special, ""), special) {
+			t.Errorf("written file leaves %q unescaped:\n%s", special, content)
+		}
+	}
+
+	got, err := godotenv.New(godotenv.WithBash()).Read(name)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !reflect.DeepEqual(src, got) {
+		t.Errorf("expected round trip %v, got %v", src, got)
 	}
 }
 
@@ -1387,6 +2320,31 @@ func BenchmarkReplaceAll(b *testing.B) {
 	}
 }
 
+func BenchmarkWildcardNoMatch(b *testing.B) {
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"replace-star-z-star-4k", "A=" + strings.Repeat("ab", 2048) + "\nFOO=${A//*z*/Q}"},
+		{"strip-prefix-star-z-star-50k", "A=" + strings.Repeat("ab", 25000) + "\nFOO=${A#*z*}"},
+		{"strip-suffix-star-z-star-50k", "A=" + strings.Repeat("ab", 25000) + "\nFOO=${A%*z*}"},
+		{"replace-all-star-4k", "A=" + strings.Repeat("ab", 2048) + "\nFOO=${A//*/Q}"},
+		{"replace-all-question-4k", "A=" + strings.Repeat("ab", 2048) + "\nFOO=${A//?/x}"},
+		{"strip-literal-prefix-50k", "A=" + strings.Repeat("ab", 25000) + "\nFOO=${A#ab*}"},
+		{"replace-star-literal-4k", "A=" + strings.Repeat("ab", 2048) + "\nFOO=${A//*ab/Q}"},
+	}
+
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			for b.Loop() {
+				if _, err := godotenv.Unmarshal(tc.input); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func FuzzUnmarshal(f *testing.F) {
 	seeds := []string{
 		"FOO=bar",
@@ -1406,6 +2364,13 @@ func FuzzUnmarshal(f *testing.F) {
 		`FOO="\x41\U0001F600"`,
 		"\xff\xfe",
 		"\x00",
+		"A=abc\nB=b\nFOO=${A#${B}}",
+		"A=abc\nFOO=${A//*/X}",
+		"A=abc\nFOO=${A///X}",
+		"A=aab\nFOO=${A//#a/X}",
+		"FOO=abc\\",
+		`FOO=a\ #b`,
+		`FOO="\u"`,
 	}
 
 	for _, seed := range seeds {
@@ -1441,6 +2406,10 @@ func FuzzExpand(f *testing.F) {
 		"$'literal'",
 		"$(echo hi)",
 		"\xff",
+		"${A//*/X}",
+		"${A///X}",
+		`${A#$'*'}`,
+		"${A#${B}}",
 	}
 
 	for _, seed := range seeds {
@@ -1469,8 +2438,9 @@ func TestRoundTrip(t *testing.T) {
 		t.Run(fixture, func(t *testing.T) {
 			t.Parallel()
 
+			loader := godotenv.New(godotenv.WithBash())
 			fixtureFilename := fmt.Sprintf("fixtures/%s", fixture)
-			env, err := godotenv.Read(fixtureFilename)
+			env, err := loader.Read(fixtureFilename)
 			if err != nil {
 				t.Errorf("Expected '%s' to read without error (%v)", fixtureFilename, err)
 			}
@@ -1478,7 +2448,7 @@ func TestRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Errorf("Expected '%s' to Marshal (%v)", fixtureFilename, err)
 			}
-			roundtripped, err := godotenv.Unmarshal(rep)
+			roundtripped, err := loader.Unmarshal(rep)
 			if err != nil {
 				t.Errorf("Expected '%s' to Mashal and Unmarshal (%v)", fixtureFilename, err)
 			}

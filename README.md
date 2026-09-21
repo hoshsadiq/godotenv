@@ -8,41 +8,45 @@ From the original Library:
 >
 > But it is not always practical to set environment variables on development machines or continuous integration servers where multiple projects are run. Dotenv load variables from a .env file into ENV when the environment is bootstrapped.
 
-It can be used as a library (for loading in env for your own daemons etc) or as a bin command.
-
-There is test coverage and CI for Linux, macOS and Windows, but I make no guarantees about the command-line tool working on Windows.
-
 This is a fork of [joho/godotenv](https://github.com/joho/godotenv) with an improved parser that allows for far fewer allocations, and, due to removal of regexp usage, it should be significantly faster.
+
+It can be used as a library (for loading in env for your own daemons etc) or as a command. There is test coverage and CI for Linux, macOS and Windows, but I make no guarantees about the command-line tool working on Windows.
 
 ## Installation
 
-As a library
+### Library
+
 ```shell
 go get github.com/hoshsadiq/godotenv
 ```
 
-or if you want to use it as a bin command
+### Command line
+
 ```shell
 go install github.com/hoshsadiq/godotenv/cmd/godotenv@latest
 ```
 
-or via GitHub releases:
+### Release archives
+
 ```shell
 os="linux" # linux, darwin, freebsd, windows
 arch="amd64" # amd64, armv6, armv7, arm64
 
 # latest version
-curl -fsSL "https://github.com/hoshsadiq/godotenv/releases/latest/download/godotenv_linux_amd64.tar.gz" |
+curl -fsSL "https://github.com/hoshsadiq/godotenv/releases/latest/download/godotenv_${os}_${arch}.tar.gz" |
   tar -xzvf - -C $HOME/.local/bin
 
 # or a specific version
-curl -fsSL "https://github.com/hoshsadiq/godotenv/releases/download/v1.0.0/godotenv_linux_amd64.tar.gz" |
+curl -fsSL "https://github.com/hoshsadiq/godotenv/releases/download/v1.0.0/godotenv_${os}_${arch}.tar.gz" |
   tar -xzvf - -C $HOME/.local/bin
 ```
 
 For a list of os/arch combinations, see the [releases page](https://github.com/hoshsadiq/godotenv/releases).
 
-In the case of GitHub releases, the checksums file is signed with [cosign](https://github.com/sigstore/cosign) (keyless, via GitHub Actions OIDC):
+### Checksums
+
+The checksums file is signed with [cosign](https://github.com/sigstore/cosign) (keyless, via GitHub Actions OIDC):
+
 ```shell
 os="linux" # linux, darwin, freebsd, or windows
 arch="amd64" # amd64, armv6, armv7, or arm64
@@ -60,9 +64,12 @@ cosign verify-blob \
 grep "godotenv_${os}_${arch}" godotenv_checksums.txt | sha256sum -c
 ```
 
-Lastly, you can use Docker or Podman to pull in godotenv. See the [releases page](https://github.com/hoshsadiq/godotenv/releases) for the URLs and tags. Note the images are based on [distroless](https://github.com/GoogleContainerTools/distroless) so they do not have a shell or anything else attached. Thus they're only useful for minimal images or copying the executable over into your own Docker image.
+### Containers
+
+You can use Docker or Podman to pull in godotenv. See the [releases page](https://github.com/hoshsadiq/godotenv/releases) for the URLs and tags. Note the images are based on [distroless](https://github.com/GoogleContainerTools/distroless) so they do not have a shell or anything else attached. Thus they're only useful for minimal images or copying the executable over into your own Docker image.
 
 Container images are signed with cosign as well:
+
 ```shell
 cosign verify \
   --certificate-identity-regexp '^https://github.com/hoshsadiq/godotenv/' \
@@ -71,6 +78,8 @@ cosign verify \
 ```
 
 ## Usage
+
+### Loading a file
 
 Add your application configuration to your `.env` file in the root of your project:
 
@@ -119,7 +128,9 @@ FOO=BAR # comments at line end are OK too
 export BAR=BAZ
 ```
 
-as a final aside, if you don't want godotenv munging your env you can just get a map back instead
+### Reading into a map
+
+If you don't want godotenv munging your env you can just get a map back instead
 
 ```go
 file, err := os.Open(".env")
@@ -167,29 +178,34 @@ env, err := loader.Decode(file)
 By default the parser follows strict POSIX shell rules with some exceptions.
 There are four options:
 
-- `WithUnboundError()`: an unset `$VAR` or `${VAR}` returns an error instead of
-  expanding to an empty string. This is the equivalent of `set -u`.
-- `WithBash()`: opt into the bash extensions. Without it, each of the following
-  is literal text:
-  - `$'...'` ANSI-C quoting, including `\xHH`, the braced `\x{}`, `\uHHHH` and
-    `\UHHHHHHHH`.
+- `WithUnboundError()`: an unset `$VAR` or `${VAR}` returns an error instead of expanding to an empty string. This is the equivalent of `set -u`.
+- `WithBash()`: opt into the bash extensions. Without it, each of the following is literal text:
+  - `$'...'` ANSI-C quoting, including `\xHH`, the braced `\x{}`, `\uHHHH` and `\UHHHHHHHH`.
   - `$"..."` translation quoting, which behaves as `"..."`.
   - dotenv-style backslash escapes inside `"..."`, so `"\n"` is a newline and
     `"\t"` is a tab.
-- `WithOverride()`: `Load` overwrites variables already set in the process
-  environment, so the files win instead of the environment.
-- `WithLookup()`: the function used to resolve a reference to a variable not
-  defined earlier in the parsed content. By default the process environment is
-  used.
+- `WithOverride()`: `Load` overwrites variables already set in the process environment, so the files win instead of the environment.
+- `WithLookup()`: the function used to resolve a reference to a variable not defined earlier in the parsed content. By default the process environment is used.
 
 The package-level `Load`, `Decode`, `Unmarshal` and `Expand` functions use the
 default (POSIX) behaviour and the process environment. Create a `Loader` with
 `New` to change either.
 
-### Shell Semantics
+### Precedence and merge order
 
-These forms are recognised in a value. `pat` is a shell glob (`*`, `?`,
-`[...]`); `word` and `rep` are expanded recursively.
+`Load` reads the process's environment, then merges variables read from the
+specified files. It leaves anything already set in the environment alone, so
+pre-existing environment variables stay (first wins). You can use `WithOverride()` to
+override this (last wins).
+
+Key names must match `[A-Za-z_][A-Za-z0-9_]*`; in particular they cannot
+contain `-` or `.`.
+
+## Parser semantics
+
+### Shell forms
+
+These forms are recognised in a value. `pat` is a shell glob (`*`, `?`, `[...]`); `word` and `rep` are expanded recursively.
 
 | form | meaning |
 | --- | --- |
@@ -213,7 +229,7 @@ run a command. I can't foresee it being needed in `.env` files, and feels
 like it's rife for exploitation. I'm happy for someone to make the case
 for adding support for this, please raise an issue.
 
-Quoting:
+### Quoting
 
 | form | default (POSIX) | `WithBash()` |
 | --- | --- | --- |
@@ -229,77 +245,24 @@ because the `$'...'` sits inside the `${...}` word. A `$'` written directly in
 `$'` and closing quote but still decodes `\t`, giving `$'a` + tab + `b'`; under
 the default POSIX parser it stays the literal text `$'a\tb'`.
 
-### Expanding Arbitrary Strings
+### Expanding arbitrary strings
 
-`Expand` resolves references inside a single string, for configuration values
-that are not `.env` syntax:
+`Expand` resolves references inside a single string, for configuration values that are not `.env` syntax:
 
 ```go
 out, err := godotenv.Expand("token=${API_KEY}")
 ```
 
-Only `$NAME` and `${...}` are interpreted, against the process environment. For
-a custom lookup or other options, use a `Loader`:
+Only `$NAME` and `${...}` are interpreted, against the process environment. For a custom lookup or other options, use a `Loader`:
 
 ```go
 loader := godotenv.New(godotenv.WithLookup(myLookup), godotenv.WithUnboundError())
 out, err := loader.Expand("token=${API_KEY}")
 ```
 
-`WithUnboundError()` makes an unset variable with no modifier an error instead
-of the empty string, and `WithBash()` enables the `$'...'` and `$"..."` forms.
-`$((...))` is left as written. `LookupEnvFunc` is the lookup signature taken by
-`WithLookup`.
+`WithUnboundError()` makes an unset variable with no modifier an error instead of the empty string. `$((...))` is left as written, and `LookupEnvFunc` is the lookup signature taken by `WithLookup`.
 
-### Precedence & Conventions
-
-`Load` reads the process's environment, then merges variables read from the
-specified files. It leaves anything already set in the environment alone, so
-pre-existing environment variables stay. You can use `WithOverride()` to
-override this.
-
-Within one call, files are read in the order you give them. If the same key
-appears in more than one file, the value from the last file is used.
-
-Key names must match `[A-Za-z_][A-Za-z0-9_]*`; in particular they cannot
-contain `-` or `.`.
-
-The [convention](https://github.com/bkeepers/dotenv#what-other-env-files-can-i-use)
-for managing multiple environments (i.e. development, test, production)
-is to create an env named `{YOURAPP}_ENV` and load envs in this order:
-
-```go
-env := os.Getenv("FOO_ENV")
-if "" == env {
-  env = "development"
-}
-
-godotenv.Load(".env." + env + ".local")
-if "test" != env {
-  godotenv.Load(".env.local")
-}
-godotenv.Load(".env." + env)
-godotenv.Load() // The Original .env
-```
-
-If you need to, you can also use `godotenv.New(godotenv.WithOverride()).Load(...)`
-to defy this convention and overwrite existing envs instead of only supplanting
-them. Use with caution.
-
-### Command Mode
-
-Assuming you've installed the command as above, and you've got `$GOPATH/bin` in your `$PATH`
-
-```
-godotenv -f /some/path/to/.env some_command with some args
-```
-
-If you don't specify `-f` it will fall back on the default of loading `.env` in `PWD`
-
-`-f` may be repeated to load several files (later files win) and replaces the
-default `.env`. Pass `-o` to override existing environment variables.
-
-### Writing Env Files
+## Writing env files
 
 Godotenv can also write a map back to a correctly formatted and escaped file. Values are preserved as they are: integer values stay unquoted, leading zeros included, and everything else is double-quoted with `$` and `` ` `` backslash-escaped so the file is safe to `source`.
 
@@ -329,7 +292,39 @@ if err != nil {
 fmt.Println(string(content))
 ```
 
-## Development
+## Command-line tool
+
+Assuming you've installed the command as above, and you've got `$GOPATH/bin` in your `$PATH`
+
+```
+godotenv -f /some/path/to/.env some_command with some args
+```
+
+If you don't specify `-f` it will fall back on the default of loading `.env` in `PWD`.
+
+`-f` may be repeated to load several files (later files win) and replaces the default `.env`. Pass `-o` to override existing environment variables, and `-v` to print the version.
+
+## Multiple environments
+
+The [convention](https://github.com/bkeepers/dotenv#what-other-env-files-can-i-use) for managing multiple environments (i.e. development, test, production) is to create an env named `{YOURAPP}_ENV` and load envs in this order:
+
+```go
+env := os.Getenv("FOO_ENV")
+if "" == env {
+  env = "development"
+}
+
+godotenv.Load(".env." + env + ".local")
+if "test" != env {
+  godotenv.Load(".env.local")
+}
+godotenv.Load(".env." + env)
+godotenv.Load() // The Original .env
+```
+
+If you need to, you can also use `godotenv.New(godotenv.WithOverride()).Load(...)` to defy this convention and overwrite existing envs instead of only supplanting them. Use with caution.
+
+## Development and contributing
 
 Tools are pinned with [mise](https://mise.jdx.dev/) and the git hooks run through [prek](https://prek.j178.dev/):
 
@@ -342,12 +337,11 @@ Useful tasks:
 
 - `mise run test`: `go test -race -cover ./...`
 - `mise run check`: gofumpt, goimports, golangci-lint and go vet
+- `mise run bashdiff`: diff the parser against real bash and POSIX shells
 - `mise run precommit`: run every prek hook
 - `mise run release:dry`: build a GoReleaser snapshot
 
-## Contributing
-
-Contributions are most welcome! The parser itself is pretty stupidly naive and I wouldn't be surprised if it breaks with edge cases.
+Contributions are most welcome! The parser is checked against real bash and POSIX shells by the differential harnesses above, so run `mise run bashdiff` before sending a change.
 
 *code changes without tests will not be accepted*
 
@@ -363,6 +357,6 @@ Releases follow [Semver](https://semver.org/); the first two releases are `v1.0.
 
 Use annotated tags for all releases, for example `git tag -a v1.2.1`
 
-## Who?
+## Credits
 
-The original library [dotenv](https://github.com/bkeepers/dotenv) was written by [Brandon Keepers](http://opensoul.org/), and this port was done by [John Barton](https://johnbarton.co/) based off the tests/fixtures in the original library.
+The original library [dotenv](https://github.com/bkeepers/dotenv) was written by [Brandon Keepers](http://opensoul.org/), and the upstream Go port by [John Barton](https://johnbarton.co/) based off the tests/fixtures in the original library. This fork is maintained by [hoshsadiq](https://github.com/hoshsadiq).

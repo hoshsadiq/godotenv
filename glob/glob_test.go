@@ -1,7 +1,10 @@
 package glob_test
 
 import (
+	"bytes"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/hoshsadiq/godotenv/glob"
 )
@@ -55,6 +58,16 @@ func TestMatch(t *testing.T) {
 		{name: "question multibyte middle", pattern: "a?c", s: "aéc", want: true},
 		{name: "question multibyte counts one rune", pattern: "??", s: "é", want: false},
 		{name: "question multibyte two runes", pattern: "??", s: "éé", want: true},
+		{name: "star question multibyte one rune", pattern: "*?", s: "€", want: true},
+		{name: "star question multibyte needs two runes", pattern: "*??", s: "€", want: false},
+		{name: "star question multibyte two runes", pattern: "*??", s: "€€", want: true},
+
+		// '?' treats a byte that cannot start a rune as a character of its own,
+		// as bash does, but must not split a valid rune.
+		{name: "question lone continuation byte", pattern: "?", s: "\x80", want: true},
+		{name: "question after literal lone continuation byte", pattern: "a?", s: "a\xa9", want: true},
+		{name: "question truncated rune bytes", pattern: "??", s: "\xe2\x82", want: true},
+		{name: "question does not split valid rune", pattern: "??", s: "€", want: false},
 
 		// Character classes.
 		{name: "class member", pattern: "[abc]", s: "a", want: true},
@@ -147,6 +160,7 @@ func TestMatchPrefix(t *testing.T) {
 		{name: "question empty", pattern: "?", s: "", wantEnd: 0, wantOK: false},
 		{name: "question multibyte", pattern: "?", s: "é", wantEnd: 2, wantOK: true},
 		{name: "question multibyte longer", pattern: "?", s: "éx", wantEnd: 2, wantOK: true},
+		{name: "star question multibyte needs two runes", pattern: "*??", s: "€", wantEnd: 0, wantOK: false},
 		{name: "question middle", pattern: "a?c", s: "abcd", wantEnd: 3, wantOK: true},
 		{name: "question middle missing", pattern: "a?c", s: "ac", wantEnd: 0, wantOK: false},
 		{name: "multiple stars", pattern: "a*b*c", s: "axbyc", wantEnd: 5, wantOK: true},
@@ -200,6 +214,7 @@ func TestMatchSuffix(t *testing.T) {
 		{name: "question empty", pattern: "?", s: "", wantEnd: 0, wantOK: false},
 		{name: "question multibyte", pattern: "?", s: "é", wantEnd: 2, wantOK: true},
 		{name: "question middle", pattern: "a?c", s: "xabc", wantEnd: 3, wantOK: true},
+		{name: "star question multibyte needs two runes", pattern: "*??", s: "€", wantEnd: 0, wantOK: false},
 		{name: "question middle absent", pattern: "a?c", s: "abcx", wantEnd: 0, wantOK: false},
 		{name: "class", pattern: "[a-z]", s: "ab", wantEnd: 1, wantOK: true},
 		{name: "class absent", pattern: "[a-z]", s: "a1", wantEnd: 0, wantOK: false},
@@ -253,12 +268,14 @@ func TestFind(t *testing.T) {
 		{name: "question empty", pattern: "?", s: "", wantStart: 0, wantEnd: 0, wantOK: false},
 		{name: "question multibyte", pattern: "?", s: "é", wantStart: 0, wantEnd: 2, wantOK: true},
 		{name: "question multibyte longer", pattern: "?", s: "éx", wantStart: 0, wantEnd: 2, wantOK: true},
+		{name: "star question multibyte needs two runes", pattern: "*??", s: "€", wantStart: 0, wantEnd: 0, wantOK: false},
 		{name: "question middle", pattern: "a?c", s: "xabcx", wantStart: 1, wantEnd: 4, wantOK: true},
 		{name: "question middle absent", pattern: "a?c", s: "xyz", wantStart: 0, wantEnd: 0, wantOK: false},
 		{name: "longest earliest", pattern: "a*b", s: "xaXbYb", wantStart: 1, wantEnd: 6, wantOK: true},
 		{name: "star backtrack find", pattern: "a*b", s: "xaXb", wantStart: 1, wantEnd: 4, wantOK: true},
 		{name: "longest exact", pattern: "a*b", s: "ab", wantStart: 0, wantEnd: 2, wantOK: true},
 		{name: "longest absent", pattern: "a*b", s: "ba", wantStart: 0, wantEnd: 0, wantOK: false},
+		{name: "leftmost longest two stars", pattern: "*b*a", s: "abab", wantStart: 0, wantEnd: 3, wantOK: true},
 		{name: "class", pattern: "[a-z]", s: "1a2", wantStart: 1, wantEnd: 2, wantOK: true},
 		{name: "class absent", pattern: "[a-z]", s: "123", wantStart: 0, wantEnd: 0, wantOK: false},
 		{name: "escaped star", pattern: `a\*b`, s: "xa*bx", wantStart: 1, wantEnd: 4, wantOK: true},
@@ -273,6 +290,186 @@ func TestFind(t *testing.T) {
 			if start != tt.wantStart || end != tt.wantEnd || ok != tt.wantOK {
 				t.Errorf("Find(%q, %q) = (%d, %d, %v), want (%d, %d, %v)",
 					tt.pattern, tt.s, start, end, ok, tt.wantStart, tt.wantEnd, tt.wantOK)
+			}
+		})
+	}
+}
+
+// TestMatchLinear guards against a super-linear search. The matcher used to try
+// every substring, so a pattern whose literals occur in the value but which
+// cannot match took minutes on a large value (Find was O(n^3)).
+func TestMatchLinear(t *testing.T) {
+	t.Parallel()
+
+	// "aaa...ab" contains both literals of "*b*a" but has no 'a' after the
+	// 'b', so nothing matches and maybeMatch cannot prune the search.
+	value := append(bytes.Repeat([]byte("a"), 10000), 'b')
+	pattern := []byte("*b*a")
+
+	calls := []struct {
+		name string
+		fn   func() bool
+	}{
+		{"Match", func() bool { return glob.Match(pattern, value) }},
+		{"MatchPrefix", func() bool { _, _, ok := glob.MatchPrefix(pattern, value); return ok }},
+		{"MatchSuffix", func() bool { _, _, ok := glob.MatchSuffix(pattern, value); return ok }},
+		{"Find", func() bool { _, _, ok := glob.Find(pattern, value); return ok }},
+	}
+
+	for _, c := range calls {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			done := make(chan bool, 1)
+			go func() { done <- c.fn() }()
+
+			select {
+			case matched := <-done:
+				if matched {
+					t.Fatalf("%s(%q, value) matched, want no match", c.name, pattern)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatalf("%s(%q, value) did not finish in 2s; the search is super-linear", c.name, pattern)
+			}
+		})
+	}
+}
+
+// TestMatchManyBracketsLinear guards against quadratic class scanning. A pattern
+// that is a long run of '[' has no closing ']', so each '[' used to rescan to
+// the end of the pattern.
+func TestMatchManyBracketsLinear(t *testing.T) {
+	t.Parallel()
+
+	pattern := bytes.Repeat([]byte("["), 200000)
+	s := []byte("x")
+
+	done := make(chan bool, 1)
+	go func() { done <- glob.Match(pattern, s) }()
+
+	select {
+	case matched := <-done:
+		if matched {
+			t.Fatal("Match with a long run of '[' matched, want no match")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Match with a long run of '[' did not finish in 2s; class scanning is quadratic")
+	}
+}
+
+func TestCompile(t *testing.T) {
+	t.Parallel()
+
+	p := glob.Compile([]byte("a*b"))
+	if !p.Match([]byte("aXb")) {
+		t.Error("Compile(a*b).Match(aXb) = false, want true")
+	}
+	if _, end, ok := p.MatchPrefix([]byte("aXbYb")); !ok || end != 5 {
+		t.Errorf("Compile(a*b).MatchPrefix(aXbYb) = (_, %d, %v), want (_, 5, true)", end, ok)
+	}
+	if _, end, ok := p.MatchSuffix([]byte("xaXb")); !ok || end != 4 {
+		t.Errorf("Compile(a*b).MatchSuffix(xaXb) = (_, %d, %v), want (_, 4, true)", end, ok)
+	}
+	if start, end, ok := p.Find([]byte("xaXb")); !ok || start != 1 || end != 4 {
+		t.Errorf("Compile(a*b).Find(xaXb) = (%d, %d, %v), want (1, 4, true)", start, end, ok)
+	}
+}
+
+func TestPrefixMatches(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pattern string
+		s       string
+		want    []int
+	}{
+		{name: "literal", pattern: "a", s: "abc", want: []int{1}},
+		{name: "literal absent", pattern: "x", s: "abc", want: nil},
+		{name: "empty pattern", pattern: "", s: "abc", want: []int{0}},
+		{name: "star every prefix", pattern: "*", s: "abc", want: []int{0, 1, 2, 3}},
+		{name: "star middle", pattern: "a*b", s: "aXbYb", want: []int{3, 5}},
+		{name: "question rune", pattern: "?", s: "éx", want: []int{2}},
+		{name: "question mid rune", pattern: "\xc3?", s: "é", want: nil},
+		{name: "question lone continuation byte", pattern: "a?", s: "a\x80", want: []int{2}},
+		{name: "question does not split valid rune", pattern: "??", s: "€", want: nil},
+		{name: "class", pattern: "[ab]", s: "abc", want: []int{1}},
+		{name: "run absent", pattern: "a*b", s: "xyz", want: nil},
+		{name: "mid rune byte", pattern: "\xc3", s: "é", want: []int{1}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := glob.Compile([]byte(tt.pattern)).PrefixMatches([]byte(tt.s))
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("PrefixMatches(%q, %q) = %v, want %v", tt.pattern, tt.s, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSuffixMatches(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pattern string
+		s       string
+		want    []int
+	}{
+		{name: "literal", pattern: "bc", s: "abc", want: []int{1}},
+		{name: "literal absent", pattern: "x", s: "abc", want: nil},
+		{name: "empty pattern", pattern: "", s: "abc", want: []int{3}},
+		{name: "star every suffix", pattern: "*", s: "abc", want: []int{0, 1, 2, 3}},
+		{name: "star leading", pattern: "*b", s: "abcb", want: []int{0, 1, 2, 3}},
+		{name: "question rune", pattern: "?", s: "xé", want: []int{1}},
+		{name: "class", pattern: "[bc]", s: "abc", want: []int{2}},
+		{name: "run absent", pattern: "a*b", s: "xyz", want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := glob.Compile([]byte(tt.pattern)).SuffixMatches([]byte(tt.s))
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("SuffixMatches(%q, %q) = %v, want %v", tt.pattern, tt.s, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindAll(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		pattern string
+		s       string
+		want    [][2]int
+	}{
+		{name: "literal repeated", pattern: "a", s: "aba", want: [][2]int{{0, 1}, {2, 3}}},
+		{name: "literal absent", pattern: "x", s: "abc", want: nil},
+		{name: "star whole", pattern: "*", s: "abc", want: [][2]int{{0, 3}}},
+		{name: "star middle longest", pattern: "a*b", s: "aXbYb", want: [][2]int{{0, 5}}},
+		{name: "question runes", pattern: "?", s: "éa", want: [][2]int{{0, 2}, {2, 3}}},
+		{name: "question lone continuation bytes", pattern: "?", s: "\x80\x80", want: [][2]int{{0, 1}, {1, 2}}},
+		{name: "literal continuation byte", pattern: "\x82", s: "€", want: [][2]int{{1, 2}}},
+		{name: "class continuation byte agrees with literal", pattern: "[\x82]", s: "€", want: [][2]int{{1, 2}}},
+		{name: "empty value", pattern: "*", s: "", want: nil},
+		{name: "empty pattern", pattern: "", s: "abc", want: nil},
+		{name: "run absent", pattern: "a*b", s: "xyz", want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := glob.Compile([]byte(tt.pattern)).FindAll([]byte(tt.s))
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("FindAll(%q, %q) = %v, want %v", tt.pattern, tt.s, got, tt.want)
 			}
 		})
 	}

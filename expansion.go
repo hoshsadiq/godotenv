@@ -819,41 +819,54 @@ func (p *parser) expandString(s string, lookupEnv LookupEnvFunc) (string, error)
 }
 
 func stripPrefix(value, pattern []byte, longest bool) []byte {
-	bounds := runeBoundaries(value)
+	smallest, largest := boundaryRange(glob.Compile(pattern).PrefixMatches(value), runeBoundaries(value))
+	b := smallest
 	if longest {
-		for i := len(bounds) - 1; i >= 0; i-- {
-			if glob.Match(pattern, value[:bounds[i]]) {
-				return value[bounds[i]:]
-			}
-		}
-	} else {
-		for _, b := range bounds {
-			if glob.Match(pattern, value[:b]) {
-				return value[b:]
-			}
-		}
+		b = largest
+	}
+	if b < 0 {
+		return value
 	}
 
-	return value
+	return value[b:]
 }
 
 func stripSuffix(value, pattern []byte, longest bool) []byte {
-	bounds := runeBoundaries(value)
+	smallest, largest := boundaryRange(glob.Compile(pattern).SuffixMatches(value), runeBoundaries(value))
+	b := largest
 	if longest {
-		for _, b := range bounds {
-			if glob.Match(pattern, value[b:]) {
-				return value[:b]
-			}
+		b = smallest
+	}
+	if b < 0 {
+		return value
+	}
+
+	return value[:b]
+}
+
+// boundaryRange returns the smallest and largest offset present in both matches
+// and bounds, or -1 for each when they share none. Both slices are sorted, so
+// the intersection is one merge rather than a search per match.
+func boundaryRange(matches, bounds []int) (smallest, largest int) {
+	smallest, largest = -1, -1
+
+	j := 0
+	for _, m := range matches {
+		for j < len(bounds) && bounds[j] < m {
+			j++
 		}
-	} else {
-		for i := len(bounds) - 1; i >= 0; i-- {
-			if glob.Match(pattern, value[bounds[i]:]) {
-				return value[:bounds[i]]
+		if j == len(bounds) {
+			break
+		}
+		if bounds[j] == m {
+			if smallest < 0 {
+				smallest = m
 			}
+			largest = m
 		}
 	}
 
-	return value
+	return smallest, largest
 }
 
 func (p *parser) replace(value, pattern, replacement []byte, all bool, anchor byte) []byte {
@@ -876,15 +889,17 @@ func (p *parser) replace(value, pattern, replacement []byte, all bool, anchor by
 		return p.replaceAll(value, pattern, replacement)
 	}
 
+	pat := glob.Compile(pattern)
+
 	var start, end int
 	var ok bool
 	switch anchor {
 	case '#':
-		start, end, ok = glob.MatchPrefix(pattern, value)
+		start, end, ok = pat.MatchPrefix(value)
 	case '%':
-		start, end, ok = glob.MatchSuffix(pattern, value)
+		start, end, ok = pat.MatchSuffix(value)
 	default:
-		start, end, ok = glob.Find(pattern, value)
+		start, end, ok = pat.Find(value)
 	}
 	if !ok {
 		return value
@@ -902,30 +917,30 @@ func (p *parser) replace(value, pattern, replacement []byte, all bool, anchor by
 // a further empty match, but an empty value still gets one attempt so a
 // pattern matching the empty string (such as `*`) inserts a replacement.
 func (p *parser) replaceAll(value, pattern, replacement []byte) []byte {
+	pat := glob.Compile(pattern)
+
 	if len(value) == 0 {
-		if _, end, ok := glob.MatchPrefix(pattern, value); ok && end == 0 {
+		if _, end, ok := pat.MatchPrefix(value); ok && end == 0 {
 			return append([]byte(nil), replacement...)
 		}
+
+		return value
+	}
+
+	matches := pat.FindAll(value)
+	if len(matches) == 0 {
 		return value
 	}
 
 	out := make([]byte, 0, len(value))
-	offset := 0
-
-	for offset < len(value) {
-		_, end, ok := glob.MatchPrefix(pattern, value[offset:])
-		if !ok || end == 0 {
-			_, size := utf8.DecodeRune(value[offset:])
-			out = append(out, value[offset:offset+size]...)
-			offset += size
-			continue
-		}
-
+	prev := 0
+	for _, m := range matches {
+		out = append(out, value[prev:m[0]]...)
 		out = append(out, replacement...)
-		offset += end
+		prev = m[1]
 	}
 
-	return out
+	return append(out, value[prev:]...)
 }
 
 func (p *parser) substring(characterStart int, value, spec []byte, lookupEnv LookupEnvFunc) ([]byte, error) {

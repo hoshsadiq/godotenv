@@ -1,11 +1,11 @@
-// Package glob implements the shell pattern matching used by the parameter
-// expansion operators ${v#p}, ${v##p}, ${v%p} and ${v%%p}, and by the bash
-// replacement family ${v/p/r} and ${v//p/r}.
+// Package glob implements shell pattern matching over byte strings.
 //
 // A pattern is a byte string. The following bytes are special:
 //
 //   - '*' matches any sequence of bytes, including the empty sequence.
-//   - '?' matches exactly one UTF-8 rune.
+//   - '?' matches exactly one character: a whole UTF-8 rune where the bytes
+//     decode to one, or a single byte where they do not (a lone or truncated
+//     sequence), matching how bash treats malformed input.
 //   - '[...]' matches one byte drawn from a class. A leading '!' or '^'
 //     negates the class, 'a-z' is an inclusive byte range, and a ']' that
 //     immediately follows the opening '[' (or its negation) is a literal
@@ -14,10 +14,18 @@
 //   - '\x' matches the literal byte x, so '\*' is a literal asterisk and '\\'
 //     a literal backslash. A trailing '\' is a literal backslash.
 //
-// Matching is byte-oriented except for '?', which consumes a whole rune. A
-// pattern can therefore match a prefix that ends in the middle of a multi-byte
-// rune; callers that need rune-aligned results must choose rune-aligned
-// candidate boundaries themselves.
+// Matching is byte-oriented except for '?', which consumes one character and
+// only starts at a character boundary, as defined by a greedy left-to-right
+// decode. A pattern can therefore match a prefix that ends in the middle of a
+// multi-byte rune; callers that need rune-aligned results must choose
+// rune-aligned candidate boundaries themselves.
+//
+// Compile a pattern once and reuse it when matching the same pattern against
+// many strings. Matching is a single left-to-right state simulation: the
+// pattern is compiled to a token list and each text position carries the
+// furthest a token suffix can match. It is O(len(pattern)*len(s)) time and
+// O(len(pattern)+len(s)) space, with no backtracking, so a hostile pattern
+// cannot blow up the search.
 //
 // The implementation is regexp-free and never touches the filesystem. It
 // deliberately does not use path.Match or filepath.Match, which are
@@ -30,20 +38,92 @@ import (
 	"unicode/utf8"
 )
 
+const (
+	kindLiteral byte = iota
+	kindStar
+	kindAny
+	kindClass
+)
+
+// globToken is one compiled element of a pattern.
+type globToken struct {
+	kind byte
+	lit  byte
+	cls  int
+}
+
+// Pattern is a compiled pattern. Compile it once and reuse it when matching the
+// same pattern against many strings; the package-level functions recompile on
+// every call.
+type Pattern struct {
+	pattern []byte
+	toks    []globToken
+	runs    [][]byte
+	runsOK  bool
+	hasMeta bool
+	hasAny  bool
+}
+
+// Compile compiles pattern for matching. The pattern is copied, so later
+// changes to the caller's slice have no effect.
+func Compile(pattern []byte) *Pattern {
+	p := &Pattern{
+		pattern: bytes.Clone(pattern),
+		hasMeta: bytes.ContainsAny(pattern, "*?[\\"),
+		hasAny:  bytes.IndexByte(pattern, '?') >= 0,
+	}
+	p.toks = tokenize(p.pattern)
+	p.runs, p.runsOK = globRuns(p.pattern)
+
+	return p
+}
+
 // Match reports whether the shell glob pattern matches s in full.
 func Match(pattern, s []byte) bool {
-	if !globMaybeMatch(pattern, s) {
+	return Compile(pattern).Match(s)
+}
+
+// MatchPrefix returns the longest match of the shell glob pattern anchored at
+// the start of s, as the half-open byte range [start, end), and whether any
+// prefix matches. start is always 0.
+func MatchPrefix(pattern, s []byte) (start, end int, ok bool) {
+	return Compile(pattern).MatchPrefix(s)
+}
+
+// MatchSuffix returns the longest match of the shell glob pattern anchored at
+// the end of s, as the half-open byte range [start, end), and whether any
+// suffix matches. end is always len(s).
+func MatchSuffix(pattern, s []byte) (start, end int, ok bool) {
+	return Compile(pattern).MatchSuffix(s)
+}
+
+// Find returns the leftmost match of the shell glob pattern in s as the
+// half-open byte range [start, end), and whether any match exists. When more
+// than one match starts at that leftmost position, the longest wins.
+func Find(pattern, s []byte) (start, end int, ok bool) {
+	return Compile(pattern).Find(s)
+}
+
+// Match reports whether the pattern matches s in full.
+func (p *Pattern) Match(s []byte) bool {
+	if !p.maybeMatch(s) {
 		return false
 	}
 
-	return matchGlob(pattern, s)
+	if !p.hasMeta {
+		return bytes.Equal(p.pattern, s)
+	}
+
+	pre, n := p.matchRow(s)
+
+	return pre[0] == n
 }
 
-// MatchPrefix returns the longest match of pattern anchored at the start of s,
-// as the half-open byte range [start, end), and whether any prefix matches.
+// MatchPrefix returns the longest match of the pattern anchored at the start of
+// s, as the half-open byte range [start, end), and whether any prefix matches.
 // start is always 0.
-func MatchPrefix(pattern, s []byte) (start, end int, ok bool) {
-	n, ok := matchPrefixLen(pattern, s)
+func (p *Pattern) MatchPrefix(s []byte) (start, end int, ok bool) {
+	n, ok := p.matchPrefixLen(s)
 	if !ok {
 		return 0, 0, false
 	}
@@ -51,14 +131,14 @@ func MatchPrefix(pattern, s []byte) (start, end int, ok bool) {
 	return 0, n, true
 }
 
-func matchPrefixLen(pattern, s []byte) (int, bool) {
-	if !globMaybeMatch(pattern, s) {
+func (p *Pattern) matchPrefixLen(s []byte) (int, bool) {
+	if !p.maybeMatch(s) {
 		return 0, false
 	}
 
-	if !bytes.ContainsAny(pattern, "*?[\\") {
-		if bytes.HasPrefix(s, pattern) {
-			return len(pattern), true
+	if !p.hasMeta {
+		if bytes.HasPrefix(s, p.pattern) {
+			return len(p.pattern), true
 		}
 
 		return 0, false
@@ -66,10 +146,10 @@ func matchPrefixLen(pattern, s []byte) (int, bool) {
 
 	// A single unescaped '*' with no '?', '[' or '\' has a direct
 	// longest-prefix answer.
-	if star := bytes.IndexByte(pattern, '*'); star >= 0 &&
-		!bytes.ContainsAny(pattern, "?[\\") &&
-		bytes.IndexByte(pattern[star+1:], '*') < 0 {
-		pre, suf := pattern[:star], pattern[star+1:]
+	if star := bytes.IndexByte(p.pattern, '*'); star >= 0 &&
+		!bytes.ContainsAny(p.pattern, "?[\\") &&
+		bytes.IndexByte(p.pattern[star+1:], '*') < 0 {
+		pre, suf := p.pattern[:star], p.pattern[star+1:]
 		switch {
 		case len(pre) == 0 && len(suf) == 0:
 			return len(s), true
@@ -96,20 +176,19 @@ func matchPrefixLen(pattern, s []byte) (int, bool) {
 		}
 	}
 
-	for n := len(s); n >= 0; n-- {
-		if matchGlob(pattern, s[:n]) {
-			return n, true
-		}
+	pre, _ := p.matchRow(s)
+	if pre[0] < 0 {
+		return 0, false
 	}
 
-	return 0, false
+	return pre[0], true
 }
 
-// MatchSuffix returns the longest match of pattern anchored at the end of s, as
-// the half-open byte range [start, end), and whether any suffix matches. end is
-// always len(s).
-func MatchSuffix(pattern, s []byte) (start, end int, ok bool) {
-	n, ok := matchSuffixLen(pattern, s)
+// MatchSuffix returns the longest match of the pattern anchored at the end of
+// s, as the half-open byte range [start, end), and whether any suffix matches.
+// end is always len(s).
+func (p *Pattern) MatchSuffix(s []byte) (start, end int, ok bool) {
+	n, ok := p.matchSuffixLen(s)
 	if !ok {
 		return 0, 0, false
 	}
@@ -117,119 +196,348 @@ func MatchSuffix(pattern, s []byte) (start, end int, ok bool) {
 	return len(s) - n, len(s), true
 }
 
-func matchSuffixLen(pattern, s []byte) (int, bool) {
-	if !globMaybeMatch(pattern, s) {
+func (p *Pattern) matchSuffixLen(s []byte) (int, bool) {
+	if !p.maybeMatch(s) {
 		return 0, false
 	}
 
-	if !bytes.ContainsAny(pattern, "*?[\\") {
-		if bytes.HasSuffix(s, pattern) {
-			return len(pattern), true
+	if !p.hasMeta {
+		if bytes.HasSuffix(s, p.pattern) {
+			return len(p.pattern), true
 		}
 
 		return 0, false
 	}
 
-	for n := len(s); n >= 0; n-- {
-		if matchGlob(pattern, s[len(s)-n:]) {
-			return n, true
+	pre, n := p.matchRow(s)
+	for i := 0; i <= n; i++ {
+		if pre[i] == n-i {
+			return n - i, true
 		}
 	}
 
 	return 0, false
 }
 
-// Find returns the longest match of pattern anywhere in s as the half-open byte
-// range [start, end), and whether any match exists. When several matches share
-// the longest length, the one starting earliest wins.
-func Find(pattern, s []byte) (start, end int, ok bool) {
-	if !globMaybeMatch(pattern, s) {
+// Find returns the leftmost match of the pattern in s as the half-open byte
+// range [start, end), and whether any match exists. When more than one match
+// starts at that leftmost position, the longest wins.
+func (p *Pattern) Find(s []byte) (start, end int, ok bool) {
+	if !p.maybeMatch(s) {
 		return 0, 0, false
 	}
 
-	if !bytes.ContainsAny(pattern, "*?[\\") {
-		if i := bytes.Index(s, pattern); i >= 0 {
-			return i, i + len(pattern), true
+	if !p.hasMeta {
+		if i := bytes.Index(s, p.pattern); i >= 0 {
+			return i, i + len(p.pattern), true
 		}
 
 		return 0, 0, false
 	}
 
-	for start := 0; start <= len(s); start++ {
-		for end := len(s); end >= start; end-- {
-			if matchGlob(pattern, s[start:end]) {
-				return start, end, true
-			}
+	pre, n := p.matchRow(s)
+	for i := 0; i <= n; i++ {
+		if pre[i] >= 0 {
+			return i, i + pre[i], true
 		}
 	}
 
 	return 0, 0, false
 }
 
-// matchGlob reports whether the shell glob pattern matches s in full. It
-// supports '*', '?', character classes ('[...]', '[!...]'/'[^...]') and '\'
-// escapes.
-func matchGlob(pattern, s []byte) bool {
-	pi, si := 0, 0
-	star := -1
-	starS := 0
+// FindAll returns every non-overlapping longest match of the pattern in s, left
+// to right, as half-open byte ranges. Empty matches are skipped.
+func (p *Pattern) FindAll(s []byte) [][2]int {
+	var out [][2]int
 
-	for si < len(s) {
-		switch {
-		case pi < len(pattern) && pattern[pi] == '\\' && pi+1 < len(pattern):
-			if pattern[pi+1] != s[si] {
-				if star < 0 {
-					return false
-				}
-				pi = star + 1
-				starS++
-				si = starS
+	if !p.hasMeta {
+		if len(p.pattern) == 0 {
+			return out
+		}
+		for off := 0; off <= len(s); {
+			i := bytes.Index(s[off:], p.pattern)
+			if i < 0 {
+				break
+			}
+			out = append(out, [2]int{off + i, off + i + len(p.pattern)})
+			off += i + len(p.pattern)
+		}
+
+		return out
+	}
+
+	// Scan one byte at a time, so a match may start mid-rune just as the
+	// literal path above allows.
+	row, n := p.matchRow(s)
+	for offset := 0; offset < n; {
+		if row[offset] > 0 {
+			out = append(out, [2]int{offset, offset + row[offset]})
+			offset += row[offset]
+			continue
+		}
+		offset++
+	}
+
+	return out
+}
+
+// PrefixMatches returns every byte length b for which the pattern matches s[:b]
+// in full, in increasing order. Callers that need rune-aligned results can
+// filter the lengths to rune boundaries.
+func (p *Pattern) PrefixMatches(s []byte) []int {
+	if !p.maybeMatch(s) {
+		return nil
+	}
+
+	if !p.hasMeta {
+		if bytes.HasPrefix(s, p.pattern) {
+			return []int{len(p.pattern)}
+		}
+
+		return nil
+	}
+
+	return p.prefixMatches(s)
+}
+
+// prefixMatches walks the pattern forward over s, recording every offset at
+// which the whole pattern is consumed. '?' can skip several bytes, so the
+// reachable states are kept in a ring of positions.
+func (p *Pattern) prefixMatches(s []byte) []int {
+	n := len(s)
+	total := len(p.toks)
+	const ring = 5
+
+	var sets [ring][]bool
+	for i := range sets {
+		sets[i] = make([]bool, total+1)
+	}
+	sets[0][0] = true
+
+	var sizes []int
+	if p.hasAny {
+		sizes = charSizes(s)
+	}
+
+	var out []int
+	for i := 0; i <= n; i++ {
+		cur := sets[i%ring]
+
+		// A star may match nothing, so it can be skipped without consuming.
+		for t := range total {
+			if cur[t] && p.toks[t].kind == kindStar {
+				cur[t+1] = true
+			}
+		}
+		if cur[total] {
+			out = append(out, i)
+		}
+		if i == n {
+			break
+		}
+
+		for t := range total {
+			if !cur[t] {
 				continue
 			}
-			pi += 2
-			si++
-		case pi < len(pattern) && pattern[pi] == '*':
-			star = pi
-			starS = si
-			pi++
-		case pi < len(pattern) && pattern[pi] == '?':
-			_, size := utf8.DecodeRune(s[si:])
-			pi++
-			si += size
-		case pi < len(pattern) && pattern[pi] == '[':
-			next, matched, ok := matchClass(pattern, pi, s[si])
-			switch {
-			case ok && matched:
-				pi = next
-				si++
-			case !ok && s[si] == '[':
-				pi++
-				si++
-			case star >= 0:
-				pi = star + 1
-				starS++
-				si = starS
+			switch p.toks[t].kind {
+			case kindStar:
+				sets[(i+1)%ring][t] = true
+			case kindAny:
+				if size := sizes[i]; size > 0 {
+					sets[(i+size)%ring][t+1] = true
+				}
+			case kindClass:
+				_, matched, _ := matchClass(p.pattern, p.toks[t].cls, s[i])
+				if matched {
+					sets[(i+1)%ring][t+1] = true
+				}
 			default:
-				return false
+				if s[i] == p.toks[t].lit {
+					sets[(i+1)%ring][t+1] = true
+				}
 			}
-		case pi < len(pattern) && pattern[pi] == s[si]:
-			pi++
-			si++
-		default:
-			if star < 0 {
-				return false
-			}
-			pi = star + 1
-			starS++
-			si = starS
+		}
+
+		clear(cur)
+	}
+
+	return out
+}
+
+// SuffixMatches returns every byte offset i for which the pattern matches s[i:]
+// in full, in increasing order. Callers that need rune-aligned results can
+// filter the offsets to rune boundaries.
+func (p *Pattern) SuffixMatches(s []byte) []int {
+	if !p.maybeMatch(s) {
+		return nil
+	}
+
+	if !p.hasMeta {
+		if bytes.HasSuffix(s, p.pattern) {
+			return []int{len(s) - len(p.pattern)}
+		}
+
+		return nil
+	}
+
+	row, n := p.matchRow(s)
+
+	var out []int
+	for i := 0; i <= n; i++ {
+		if row[i] == n-i {
+			out = append(out, i)
 		}
 	}
 
-	for pi < len(pattern) && pattern[pi] == '*' {
-		pi++
+	return out
+}
+
+// maybeMatch is a cheap necessary condition for a match: every maximal literal
+// run in the pattern must occur in s. It lets the no-match wildcard cases
+// return without running the full matcher.
+func (p *Pattern) maybeMatch(s []byte) bool {
+	if !p.runsOK {
+		return true
+	}
+	for _, run := range p.runs {
+		if !bytes.Contains(s, run) {
+			return false
+		}
 	}
 
-	return pi == len(pattern)
+	return true
+}
+
+// tokenize compiles pattern into its elements. An unterminated class becomes a
+// literal '[', and a trailing '\' a literal backslash, matching the matcher.
+func tokenize(pattern []byte) []globToken {
+	toks := make([]globToken, 0, len(pattern))
+	noClass := false
+
+	for i := 0; i < len(pattern); {
+		switch c := pattern[i]; c {
+		case '*':
+			toks = append(toks, globToken{kind: kindStar})
+			i++
+		case '?':
+			toks = append(toks, globToken{kind: kindAny})
+			i++
+		case '[':
+			// Once no closing ']' remains, every later '[' is literal
+			// too, so scan for the class end only until it first fails.
+			if !noClass {
+				if end := globClassEnd(pattern, i); end >= 0 {
+					toks = append(toks, globToken{kind: kindClass, cls: i})
+					i = end
+					continue
+				}
+				noClass = true
+			}
+			toks = append(toks, globToken{kind: kindLiteral, lit: '['})
+			i++
+		case '\\':
+			if i+1 < len(pattern) {
+				toks = append(toks, globToken{kind: kindLiteral, lit: pattern[i+1]})
+				i += 2
+			} else {
+				toks = append(toks, globToken{kind: kindLiteral, lit: '\\'})
+				i++
+			}
+		default:
+			toks = append(toks, globToken{kind: kindLiteral, lit: c})
+			i++
+		}
+	}
+
+	return toks
+}
+
+// charSizes marks the byte offsets that begin a character under a greedy
+// left-to-right decode: sizes[i] is that character's width, or 0 when i sits
+// inside one. A byte that cannot start a rune is still a character of its own
+// when the preceding bytes decode cleanly, which is how bash matches '?'
+// against malformed input.
+func charSizes(s []byte) []int {
+	sizes := make([]int, len(s))
+	for i := 0; i < len(s); {
+		_, size := utf8.DecodeRune(s[i:])
+		sizes[i] = size
+		i += size
+	}
+
+	return sizes
+}
+
+// matchRow simulates the pattern over s. It returns a row where row[i] is the
+// greatest number of bytes the whole pattern can match starting at s[i], or -1
+// when the pattern matches no prefix of s[i:]. n is len(s), so row[i] == n-i
+// means the pattern matches s[i:] in full. Rows are computed one token at a
+// time from the last token backwards, so only two rows of state are live.
+func (p *Pattern) matchRow(s []byte) ([]int, int) {
+	n := len(s)
+	next := make([]int, n+1)
+	cur := make([]int, n+1)
+
+	var sizes []int
+	if p.hasAny {
+		sizes = charSizes(s)
+	}
+
+	for t := len(p.toks) - 1; t >= 0; t-- {
+		switch p.toks[t].kind {
+		case kindStar:
+			// The star may match nothing (next[i]) or one more byte
+			// (1 + cur[i+1]), so the row fills right to left.
+			cur[n] = next[n]
+			for i := n - 1; i >= 0; i-- {
+				best := next[i]
+				if c := cur[i+1]; c >= 0 && c+1 > best {
+					best = c + 1
+				}
+				cur[i] = best
+			}
+		case kindAny:
+			for i := range n {
+				size := sizes[i]
+				if size == 0 {
+					cur[i] = -1
+					continue
+				}
+				if next[i+size] >= 0 {
+					cur[i] = size + next[i+size]
+				} else {
+					cur[i] = -1
+				}
+			}
+			cur[n] = -1
+		case kindClass:
+			for i := range n {
+				// tokenize only emits a class when globClassEnd found
+				// the closing ']', so matchClass always reports ok.
+				_, matched, _ := matchClass(p.pattern, p.toks[t].cls, s[i])
+				if matched && next[i+1] >= 0 {
+					cur[i] = 1 + next[i+1]
+				} else {
+					cur[i] = -1
+				}
+			}
+			cur[n] = -1
+		default:
+			for i := range n {
+				if s[i] == p.toks[t].lit && next[i+1] >= 0 {
+					cur[i] = 1 + next[i+1]
+				} else {
+					cur[i] = -1
+				}
+			}
+			cur[n] = -1
+		}
+
+		next, cur = cur, next
+	}
+
+	return next, n
 }
 
 func matchClass(pattern []byte, start int, c byte) (next int, matched, ok bool) {
@@ -262,25 +570,6 @@ func matchClass(pattern []byte, start int, c byte) (next int, matched, ok bool) 
 	}
 
 	return i + 1, matched != negate, true
-}
-
-// globMaybeMatch is a cheap necessary condition for a match: every maximal
-// literal run in the pattern must occur in s. It lets the no-match wildcard
-// cases return without scanning every candidate substring. ok is false from
-// globRuns when the pattern cannot be reasoned about, in which case the full
-// matcher runs.
-func globMaybeMatch(pattern, s []byte) bool {
-	runs, ok := globRuns(pattern)
-	if !ok {
-		return true
-	}
-	for _, run := range runs {
-		if !bytes.Contains(s, run) {
-			return false
-		}
-	}
-
-	return true
 }
 
 // globRuns returns the literal substrings that any match of pattern must

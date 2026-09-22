@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hoshsadiq/godotenv"
 )
@@ -1150,6 +1151,14 @@ func TestParameterPatternsAndSubstrings(t *testing.T) {
 		{"literal percent in double slash", "A=aab\nFOO=${A//%b/X}", "aab", true},
 		{"anchored empty pattern prepends", "A=abc\nFOO=${A/#/X}", "Xabc", true},
 		{"anchored empty pattern appends", "A=abc\nFOO=${A/%/X}", "abcX", true},
+
+		// '?' matches a byte that cannot start a rune as a character of its
+		// own, so malformed input is stripped rather than left alone; it must
+		// not split a valid rune.
+		{"strip question lone continuation byte", "A=a\xa9\nFOO=${A#a?}", "", false},
+		{"strip question does not split rune", "A=€\nFOO=${A#??}", "€", false},
+		{"replace all question replaces invalid bytes", "A=\x80\x80\nFOO=${A//?/x}", "xx", false},
+		{"replace all question does not split rune", "A=€\nFOO=${A//??/x}", "€", false},
 	}
 
 	for _, tt := range tests {
@@ -2477,6 +2486,76 @@ func TestRoundTrip(t *testing.T) {
 			}
 			if !reflect.DeepEqual(env, roundtripped) {
 				t.Errorf("Expected '%s' to roundtrip as '%v', got '%v' instead", fixtureFilename, env, roundtripped)
+			}
+		})
+	}
+}
+
+// TestParameterPatternLinear guards against super-linear strip and replace
+// operators: they used to re-run the matcher at every boundary.
+func TestParameterPatternLinear(t *testing.T) {
+	t.Parallel()
+
+	// "b" + "a"*n defeats the literal precheck for every prefix, and no prefix
+	// matches "*a*b" (the b is first), so a full scan runs.
+	prefixValue := append([]byte("b"), bytes.Repeat([]byte("a"), 200000)...)
+	// "a"*n + "b": no suffix matches "*b*a" (no a after the b), and every
+	// suffix but the last contains both literals, so a full scan runs.
+	suffixValue := append(bytes.Repeat([]byte("a"), 200000), 'b')
+	// "a"*n with "?" has no literal to prune, and matches one rune at a time.
+	replaceValue := bytes.Repeat([]byte("a"), 200000)
+
+	lookup := func(name []byte) ([]byte, bool) {
+		switch string(name) {
+		case "P":
+			return prefixValue, true
+		case "S":
+			return suffixValue, true
+		case "R":
+			return replaceValue, true
+		}
+
+		return nil, false
+	}
+
+	inputs := []struct {
+		in   string
+		want string
+	}{
+		{"${P#*a*b}", string(prefixValue)},
+		{"${P##*a*b}", string(prefixValue)},
+		{"${S%*b*a}", string(suffixValue)},
+		{"${S%%*b*a}", string(suffixValue)},
+		{"${R//?/x}", strings.Repeat("x", len(replaceValue))},
+		{"${P##*}", ""},
+		{"${S%%*}", ""},
+	}
+
+	for _, tt := range inputs {
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+
+			type expandResult struct {
+				out string
+				err error
+			}
+
+			done := make(chan expandResult, 1)
+			go func() {
+				out, err := godotenv.New(godotenv.WithLookup(lookup)).Expand(tt.in)
+				done <- expandResult{out, err}
+			}()
+
+			select {
+			case r := <-done:
+				if r.err != nil {
+					t.Fatalf("Expand(%q): %v", tt.in, r.err)
+				}
+				if r.out != tt.want {
+					t.Fatalf("Expand(%q) = %q, want %q", tt.in, r.out, tt.want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("Expand(%q) did not finish in 5s; the operator is super-linear", tt.in)
 			}
 		})
 	}
